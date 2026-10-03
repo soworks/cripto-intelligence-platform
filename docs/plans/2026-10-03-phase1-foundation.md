@@ -173,7 +173,7 @@ branch = true
 source = ["cip"]
 
 [tool.coverage.report]
-fail_under = 85
+fail_under = 100
 show_missing = true
 ```
 
@@ -662,6 +662,7 @@ git commit -m "docs: add ADRs 0001-0007"
   - `cip.domain.policy.InvestmentPolicy` (frozen Pydantic model; sections `universe`, `discovery`, `portfolio`, `trading`, `risk`, `ai`, `execution`)
   - `cip.domain.policy.LoadedPolicy` dataclass: `policy: InvestmentPolicy`, `version: str` (SHA-256 hex of the file bytes)
   - `cip.domain.policy.load_policy(path: Path) -> LoadedPolicy` (raises `PolicyError`)
+  - *Post-review:* models are `strict=True, allow_inf_nan=False`; YAML booleans/ints are pinned to their exact scalar type (no `0`/`1`/`"off"`/`"75"`); USD limits have hard ceilings (per-trade 10k, daily 25k, monthly 100k); the YAML loader rejects duplicate keys. The inline code below is the original sketch; `src/` is authoritative.
 
 - [ ] **Step 1: Create `policies/investment-policy.yaml`**
 
@@ -994,7 +995,7 @@ git commit -m "feat: add versioned fail-closed investment policy loader"
 - Produces:
   - `cip.config.flags.ExecutionFlags(mode: ExecutionMode, trading_enabled: bool, kill_switch_active: bool)` with property `may_place_live_orders -> bool`
   - `cip.config.flags.FAIL_CLOSED: ExecutionFlags` = `(SHADOW, False, True)`
-  - `cip.config.flags.read_execution_flags(ssm: SSMClient, prefix: str) -> ExecutionFlags`. Reads `<prefix>/execution_mode`, `<prefix>/trading_enabled`, `<prefix>/kill_switch`.
+  - `cip.config.flags.read_execution_flags(ssm: SSMClient, prefix: str) -> ExecutionFlags`. Reads `<prefix>/execution_mode`, `<prefix>/trading_enabled`, `<prefix>/kill_switch`. Every fallback to `FAIL_CLOSED` logs a warning with the reason.
 
 - [ ] **Step 1: Create `tests/unit/conftest.py`** (fake credentials so unit tests can never reach real AWS)
 
@@ -1222,9 +1223,11 @@ git commit -m "feat: read execution flags from SSM, failing closed"
 - Produces:
   - `cip.domain.events.EventType(StrEnum)`: `SCAN_STARTED`, `SCAN_COMPLETED`, `PIPELINE_FAILED`
   - `cip.domain.events.GLOBAL_ASSET = "GLOBAL"`
-  - `cip.domain.events.LedgerEvent` (frozen): `event_type`, `correlation_id`, `policy_version`, `asset="GLOBAL"`, `created_at` (UTC), `event_id` (uuid4 hex), `payload: dict[str, Any]`; methods `to_item() -> dict[str, Any]`, `LedgerEvent.from_item(item) -> LedgerEvent`
-  - `cip.persistence.ledger.LedgerRepository(table)` with `append(event: LedgerEvent) -> None` (raises `DuplicateEventError`) and `list_by_correlation(correlation_id: str) -> list[LedgerEvent]` (time-ordered)
+  - `cip.domain.events.LedgerEvent` (frozen): `event_type`, `correlation_id`, `policy_version`, `asset="GLOBAL"`, `created_at` (UTC), `idempotency_key: str | None`, `event_id`, `payload: dict[str, Any]`; methods `to_item() -> dict[str, Any]`, `LedgerEvent.from_item(item) -> LedgerEvent`
+  - *Post-review:* `event_id` is `uuid5(ns, [correlation_id, event_type, asset, idempotency_key]).hex`, never clock-based, so retries of the same logical event share an id. `payload` is stored as a strict-JSON string attribute (exact int/float round trip); NaN/inf/non-JSON payloads raise `InvalidEventError`.
+  - `cip.persistence.ledger.LedgerRepository(table)` with `append(event: LedgerEvent) -> None` (raises `DuplicateEventError`) and `list_by_correlation(correlation_id: str) -> list[LedgerEvent]` (time-ordered; equal timestamps order by `event_id`)
   - Item keys: `PK=ASSET#<asset>`, `SK=EVENT#<ts>#<event_id>`, `GSI1PK=CORR#<correlation_id>`, `GSI1SK=<ts>#<event_id>`, `GSI2PK=TYPE#<event_type>#<yyyy-mm-dd>`, `GSI2SK=<ts>#<event_id>`; `<ts>` = `%Y-%m-%dT%H:%M:%S.%fZ`
+  - *Post-review:* `append` writes the event and a guard item `PK=IDEMP#<event_id>, SK=IDEMP` in one `TransactWriteItems` (both `attribute_not_exists(PK)`); a guard `ConditionalCheckFailed` maps to `DuplicateEventError`. Transactional puts need only `dynamodb:PutItem`.
 
 - [ ] **Step 1: Write the failing event tests** `tests/unit/domain/test_events.py`
 
@@ -1509,6 +1512,7 @@ git commit -m "feat: add append-only ledger event model and repository"
   - `cip.handlers.pipeline.record_failure` -> input includes optional `correlation_id`, `policy_version`, and `error: {"Error", "Cause"}`; returns `{"correlation_id", "status": "FAILED"}`
   - Pure functions `run_start_scan(request, ledger, flags, policy)`, `run_complete_scan(request, ledger)`, `run_record_failure(request, ledger)`
   - Environment variables: `LEDGER_TABLE`, `FLAGS_PREFIX`, `POLICY_PATH`
+  - *Post-review:* handlers treat `DuplicateEventError` as a successful replay (info log, same result), so Step Functions retries are idempotent given a stable `correlation_id` (the state machine always supplies one). The SSM client is cached per container; flag values are re-read on every invocation.
 
 - [ ] **Step 1: Write the failing tests** `tests/unit/handlers/test_pipeline.py` (also create empty `tests/unit/handlers/__init__.py`)
 
@@ -1708,7 +1712,7 @@ Expected: 4 passed.
 - [ ] **Step 5: Run all checks and commit**
 
 Run: `make check`
-Expected: all green. Total coverage >= 85% (the three `@logger.inject_lambda_context` wrappers are covered by integration tests in Task 13).
+Expected: all green. Total coverage 100% (enforced by `fail_under`).
 
 ```bash
 git add src/cip/handlers tests/unit/handlers
@@ -3418,7 +3422,7 @@ Expected: at least one scheduler-triggered `SUCCEEDED` execution.
 
 ## Phase 1 exit criteria (maps to reference doc M0 + M1)
 
-- [ ] `make check` is green locally and in CI; coverage >= 85%; policy/flags modules are at 100% branch coverage.
+- [ ] `make check` is green locally and in CI; 100% branch coverage (enforced by `fail_under`).
 - [ ] Binance reachability is decided and recorded in ADR-0003.
 - [ ] Bootstrap is applied; Terraform state lives in S3 with native locking; no AWS keys exist in GitHub.
 - [ ] `deploy-dev` deploys via OIDC; integration tests prove the pipeline records SCAN_STARTED/SCAN_COMPLETED in SHADOW mode.
