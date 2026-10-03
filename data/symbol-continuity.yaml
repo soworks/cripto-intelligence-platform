@@ -1,0 +1,20 @@
+schema_version: 1
+breaks:
+  - symbol: LUNAUSDT
+    first_discontinuous_date: 2022-05-31
+    reason: Bars through 2022-05-13 are the collapse. The 2022-05-31 bar is a different series.
+renames:
+  - predecessor: MATICUSDT
+    successor: POLUSDT
+    predecessor_last_date: 2024-09-10
+    successor_first_date: 2024-09-13
+    reason: Polygon redenomination. Prices stay as printed.
+  - predecessor: FTMUSDT
+    successor: SUSDT
+    predecessor_last_date: 2025-01-13
+    successor_first_date: 2025-01-16
+    reason: Fantom to Sonic. Prices stay as printed.
+scales:
+  - pattern: "^1000[A-Z0-9]+USDT$"
+    price_scale: 1000
+    reason: 1000x spot ticker. Prices stay as printed and are not joined to the unprefixed symbol.
