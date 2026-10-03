@@ -21,6 +21,7 @@ module "pipeline_lambda_role" {
 
   name                 = "${local.prefix}-pipeline-lambda"
   use_name_prefix      = false
+  path                 = local.role_path
   permissions_boundary = local.boundary_arn
 
   trust_policy_permissions = {
@@ -98,6 +99,7 @@ module "state_machine_role" {
 
   name                 = "${local.prefix}-scan-sfn"
   use_name_prefix      = false
+  path                 = local.role_path
   permissions_boundary = local.boundary_arn
 
   trust_policy_permissions = {
@@ -157,6 +159,7 @@ module "scheduler_role" {
 
   name                 = "${local.prefix}-scan-scheduler"
   use_name_prefix      = false
+  path                 = local.role_path
   permissions_boundary = local.boundary_arn
 
   trust_policy_permissions = {

@@ -2,11 +2,16 @@ module "data_bucket" {
   #checkov:skip=CKV_AWS_19:SSE-S3 is set through server_side_encryption_configuration (separate module resource)
   #checkov:skip=CKV_AWS_21:Versioning is enabled through the module's versioning input (separate module resource)
   #checkov:skip=CKV_AWS_300:abort_incomplete_multipart_upload_days is set in lifecycle_rule (dynamic block)
+  #checkov:skip=CKV2_AWS_6:The account-level S3 public access block (bootstrap) covers this bucket; the deploy role cannot change public access settings
   source  = "terraform-aws-modules/s3-bucket/aws"
   version = "5.16.1"
 
   bucket        = "${local.prefix}-data-${local.account_id}"
   force_destroy = !local.deletion_protection
+
+  # Public access is blocked account-wide in bootstrap. The deploy role is denied
+  # s3:PutBucketPublicAccessBlock, so the bucket-level block is not managed here.
+  attach_public_policy = false
 
   versioning = { enabled = true }
 
