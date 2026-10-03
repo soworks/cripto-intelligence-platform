@@ -1278,7 +1278,7 @@ def test_non_utc_offset_is_rejected() -> None:
 
 def test_unknown_field_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        _event(secret="x")
+        _event(unexpected="x")
 ```
 
 - [ ] **Step 2: Write the failing repository tests** `tests/unit/persistence/test_ledger.py` (also create empty `tests/unit/persistence/__init__.py`)
