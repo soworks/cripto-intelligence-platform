@@ -1,6 +1,8 @@
 import copy
 import hashlib
 import math
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,31 @@ def test_repository_policy_loads_in_shadow_mode() -> None:
     loaded = load_policy(REPO_POLICY)
     assert loaded.policy.execution.mode is ExecutionMode.SHADOW
     assert loaded.policy.trading.withdrawals_enabled is False
+
+
+def test_repository_policy_records_owner_decisions() -> None:
+    policy = load_policy(REPO_POLICY).policy
+    assert policy.schema_version == 2
+    portfolio = policy.portfolio
+    assert portfolio.starting_value_usd == 650
+    assert portfolio.holdings_are_approximate is True
+    assert portfolio.holdings_detail_due == date(2026, 10, 5)
+    assert portfolio.monthly_contribution_usd == 800
+    assert portfolio.core_monthly_usd == Decimal("560.00")
+    assert portfolio.discovery_monthly_usd == Decimal("160.00")
+    assert portfolio.reserve_monthly_usd == Decimal("80.00")
+    assert portfolio.core_btc_monthly_usd == Decimal("392.00")
+    assert portfolio.core_eth_monthly_usd == Decimal("168.00")
+    assert policy.venue.execution_venue == "binance.com"
+    assert policy.venue.market_data_base_url == "https://data-api.binance.vision"
+    assert (policy.venue.maker_fee_rate, policy.venue.taker_fee_rate) == (0.00075, 0.00075)
+    assert policy.tax.residency == "CO"
+    assert policy.tax.cost_basis_method == "FIFO"
+    assert policy.data.monthly_budget_usd == 0
+    assert policy.strategy.bar_interval == "1d"
+    assert policy.strategy.bar_close == "00:00:00Z"
+    assert (policy.strategy.min_holding_days, policy.strategy.max_holding_days) == (14, 56)
+    assert (policy.strategy.kill_after_closed_trades, policy.strategy.kill_after_months) == (40, 6)
 
 
 def test_version_is_sha256_of_file_bytes() -> None:
@@ -191,6 +218,67 @@ def test_non_boolean_flags_are_rejected(
 
 def test_boolean_schema_version_is_rejected(tmp_path: Path, policy_data: dict[str, Any]) -> None:
     policy_data["schema_version"] = True
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))
+
+
+def test_schema_version_one_is_rejected(tmp_path: Path, policy_data: dict[str, Any]) -> None:
+    policy_data["schema_version"] = 1
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))
+
+
+def test_exact_holdings_may_omit_the_due_date(tmp_path: Path, policy_data: dict[str, Any]) -> None:
+    policy_data["portfolio"]["holdings_are_approximate"] = False
+    del policy_data["portfolio"]["holdings_detail_due"]
+    loaded = load_policy(_write(tmp_path, policy_data))
+    assert loaded.policy.portfolio.holdings_detail_due is None
+
+
+def test_exact_holdings_may_keep_the_due_date(tmp_path: Path, policy_data: dict[str, Any]) -> None:
+    policy_data["portfolio"]["holdings_are_approximate"] = False
+    loaded = load_policy(_write(tmp_path, policy_data))
+    assert loaded.policy.portfolio.holdings_detail_due == date(2026, 10, 5)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("portfolio", "starting_value_usd"), 0),
+        (("portfolio", "starting_value_usd"), 1_000_001),
+        (("portfolio", "monthly_contribution_usd"), 0),
+        (("portfolio", "monthly_contribution_usd"), 1_000_001),
+        (("portfolio", "holdings_detail_due"), None),
+        (("portfolio", "contribution_split", "core"), 0.50),
+        (("portfolio", "contribution_split", "bonus"), 0.10),
+        (("portfolio", "core_mix", "SOLUSDT"), 0.30),
+        (("portfolio", "core_mix", "ETHUSDT"), 0.20),
+        (("venue", "execution_venue"), "binance.us"),
+        (("venue", "market_data_base_url"), "https://api.binance.com"),
+        (("venue", "maker_fee_rate"), 0),
+        (("venue", "taker_fee_rate"), 0.02),
+        (("tax", "residency"), "US"),
+        (("tax", "cost_basis_method"), "LIFO"),
+        (("data", "monthly_budget_usd"), 0.0),
+        (("data", "monthly_budget_usd"), 1),
+        (("strategy", "bar_interval"), "1h"),
+        (("strategy", "bar_close"), "00:00:00"),
+        (("strategy", "min_holding_days"), 0),
+        (("strategy", "max_holding_days"), 3651),
+        (("strategy", "min_holding_days"), 60),
+        (("strategy", "kill_after_closed_trades"), 0),
+        (("strategy", "kill_after_closed_trades"), 100_001),
+        (("strategy", "kill_after_months"), 0),
+        (("strategy", "kill_after_months"), 121),
+    ],
+)
+def test_schema_v2_boundary_values_are_rejected(
+    tmp_path: Path, policy_data: dict[str, Any], path: tuple[str, ...], value: object
+) -> None:
+    cursor = policy_data
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = value
     with pytest.raises(PolicyError):
         load_policy(_write(tmp_path, policy_data))
 
