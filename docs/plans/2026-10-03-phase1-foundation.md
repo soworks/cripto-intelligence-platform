@@ -1793,6 +1793,14 @@ Creates the Terraform state bucket, per-env workload permission boundaries, a mo
 
 > **Amended by ADR-0008.** The CloudTrail bucket is now `module.cloudtrail_bucket` (terraform-aws-modules/s3-bucket 5.16.1). `moved {}` blocks carried the live resources over with 0 destroys; the only change applied was an added TLS-deny statement on the bucket policy. The state bucket, boundaries, budget and trail stay plain resources (see ADR-0008 for why).
 
+> **Amended after the PR #1 review (H1, M3, M5, M7; ADR-0004/0005 amendments).**
+> - The boundaries are now a ceiling: allows are environment-scoped. There are explicit denies on state and CloudTrail buckets, flag writes, ledger table tampering and function URLs.
+> - Bootstrap adds account-level S3 Block Public Access.
+> - The state bucket policy limits each prefix to its deployer plus the admin principals (root, `asolano`, `extra_admin_principal_arns`).
+> - The CloudTrail bucket gains versioning, Object Lock (GOVERNANCE, 90 days) and a tamper-deny for non-admin principals.
+> - The CI role policies are dev/prod-scoped, with no cross-environment reads. Workload roles live on `/cip/<env>/`, and managed-policy attachment is denied.
+> - `verify_github_oidc.sh` checks all of this, including the boundary as a ceiling over an admin identity policy.
+
 **Files:**
 - Create: `terraform/bootstrap/versions.tf`, `terraform/bootstrap/variables.tf`, `terraform/bootstrap/state.tf`, `terraform/bootstrap/boundaries.tf`, `terraform/bootstrap/budget.tf`, `terraform/bootstrap/cloudtrail.tf`, `terraform/bootstrap/outputs.tf`, `terraform/bootstrap/terraform.tfvars`, `terraform/bootstrap/backend.tf`, `iam/github/plan-policy.json.tpl`, `iam/github/deploy-policy.json.tpl`, `scripts/bootstrap_github_oidc.sh`, `scripts/verify_github_oidc.sh`, `docs/runbooks/bootstrap.md`
 
@@ -2299,6 +2307,8 @@ Expected: JSON with `"required_status_checks"`. If the API returns `403 Upgrade 
 > - `pipeline.tf`: three iam `iam-role` 6.8.2 roles with the boundary, lambda 8.9.0 (`create_package = false`, `local_existing_package`, `create_role = false`), step-functions 5.1.1 (`use_existing_role = true`) and eventbridge 4.3.2 (schedules only).
 >
 > The ASL template moved to `terraform/definitions/scan-pipeline.asl.json`. Resource names, the boundary, IAM statements and fail-closed flag values are unchanged. The dev plan is 34 to add: the earlier 30, plus the data bucket TLS policy and three `terraform_data` package trackers from the lambda module. The steps below are kept as the original design record; the code in `terraform/environments/dev` is authoritative.
+>
+> After the PR #1 review, the workload roles use the IAM path `/cip/dev/`. The data bucket relies on the account-level public access block (`attach_public_policy = false`), because the deploy role may not change public access settings. The dev plan is 33 to add.
 
 **Files:**
 - Create: `terraform/modules/platform-data/{versions,main,variables,outputs}.tf`, `terraform/modules/runtime-flags/{versions,main,variables,outputs}.tf`, `terraform/modules/alerts/{versions,main,variables,outputs}.tf`, `terraform/modules/scan-pipeline/{versions,main,variables,outputs}.tf`, `terraform/modules/scan-pipeline/scan-pipeline.asl.json`, `terraform/environments/dev/{main,variables,outputs}.tf`, `terraform/environments/dev/terraform.tfvars`
@@ -3105,6 +3115,8 @@ git commit -m "infra: add dev environment (data, flags, alerts, scan pipeline)"
 
 ### Task 12: Pull-request workflow
 
+> **Amended after the PR #1 review (M6).** The workflow has four jobs: `python`, `static-analysis` (fmt, tflint v0.64.0, checkov 3.3.22), `lambda-artifact` (builds and uploads `cip-lambda.zip`) and `terraform`. Only `terraform` has `id-token: write`, and it only downloads the artifact, assumes `cip-gha-plan`, and runs init, validate and plan. uv is pinned to 0.12.23. All four jobs are required checks on `main`. The trigger also covers PRs into `feat/**` for stacked PRs.
+
 **Files:**
 - Create: `.github/workflows/pull-request.yml`, `.checkov.yaml`
 
@@ -3220,6 +3232,8 @@ Run: `gh pr merge --squash --delete-branch`
 ---
 
 ### Task 13: Deploy-dev workflow and integration tests
+
+> **Amended after the PR #1 review (M6).** `deploy-dev.yml` has three jobs: `lambda-artifact` (no id-token), then `deploy` (environment `dev`, Terraform apply, outputs passed as job outputs), then `integration` (environment `dev`, pinned uv plus `uv.lock`).
 
 **Files:**
 - Create: `.github/workflows/deploy-dev.yml`, `tests/integration/__init__.py`, `tests/integration/conftest.py`, `tests/integration/test_scan_pipeline.py`, `tests/integration/test_iam_boundaries.py`

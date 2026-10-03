@@ -22,6 +22,26 @@ Creates:
   `cip-cloudtrail-258485600712` is `module.cloudtrail_bucket` (terraform-aws-modules/s3-bucket,
   TLS-only policy plus the `aws:SourceArn`-scoped CloudTrail statements)
 
+Also creates:
+- Account-level S3 Block Public Access (all four settings).
+- State bucket policy: `bootstrap/*` is limited to the admin principals; `env/dev/*` writes
+  are limited to `cip-gha-dev` and the admins; `env/prod/*` reads and writes are limited to
+  `cip-gha-prod` and the admins. Admin principals are the account root plus
+  `admin_user_names` (default `asolano`) plus `extra_admin_principal_arns`.
+- CloudTrail bucket versioning and Object Lock (GOVERNANCE, 90 days). Deleting objects,
+  bypassing governance, and changing the policy, versioning, lock or lifecycle are denied
+  to non-admin principals.
+
+**Lockout warning.** Before switching the owner's credentials to IAM Identity Center or
+any other principal, add the new principal to `extra_admin_principal_arns` (for example
+`arn:aws:iam::258485600712:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AdministratorAccess_*`)
+and apply with the old credentials. Otherwise the new principal cannot read bootstrap state.
+Recovery: sign in as the account root, delete the `cip-tfstate-258485600712` bucket policy,
+then re-apply bootstrap. The root user can always delete a bucket policy.
+
+To enable Object Lock on an existing bucket, versioning has to be enabled first. That needs
+two applies: one with `object_lock_enabled = false` (versioning), then one with `true`.
+
 Module usage follows ADR-0008: registry modules pinned to exact versions. The state bucket,
 boundaries, budget and trail are plain resources on purpose. When a refactor moves live
 resources into a module, add `moved {}` blocks and apply only a plan with 0 to destroy and
@@ -51,9 +71,18 @@ no replacements.
 
 Preview the exact documents without changing anything: `scripts/bootstrap_github_oidc.sh --dry-run`.
 
-`verify_github_oidc.sh` runs `iam:SimulatePrincipalPolicy` spot checks (for example: the
-plan role cannot read bootstrap state or the CloudTrail bucket; the dev role cannot touch
-`cip-prod-*` or create roles without the dev boundary) and exits non-zero on any mismatch.
+`verify_github_oidc.sh` runs about 120 IAM policy simulator checks and exits non-zero on any
+mismatch:
+- CI roles (`simulate-principal-policy`). The plan role is dev-only. The dev role cannot
+  read `cip-prod-*`, write ledger items, attach managed policies, create roles off
+  `/cip/dev/` or without the boundary, or create function URLs.
+- The live boundaries as a ceiling over an admin identity policy
+  (`simulate-custom-policy --permissions-boundary-policy-input-list`): state, CloudTrail,
+  flag writes, ledger tampering, cross-account S3 and IAM are all denied.
+- The live state and CloudTrail bucket policies, per principal ARN (`aws:PrincipalArn` in
+  context).
+
+It needs only the admin profile; it changes nothing.
 
 The plan and deploy roles have `events:DescribeEventBus` on `event-bus/default` only. The
 eventbridge module reads the default bus even though it only manages schedules (ADR-0008).
