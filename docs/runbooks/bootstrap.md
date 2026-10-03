@@ -87,6 +87,13 @@ It needs only the admin profile; it changes nothing.
 The plan and deploy roles have `events:DescribeEventBus` on `event-bus/default` only. The
 eventbridge module reads the default bus even though it only manages schedules (ADR-0008).
 
+The deploy roles have `states:ValidateStateMachineDefinition` on `stateMachine:*` in this
+account and region. The AWS provider validates the definition before the state machine
+exists, so the request resource is the literal `stateMachine:*` and a `cip-<env>-*` pattern
+cannot match it. The action only validates JSON and changes nothing. The IAM simulator
+cannot evaluate it, so `verify_github_oidc.sh` does not check it; the first dev deploy
+(run 37149792669, attempt 2) proved it.
+
 The OIDC roles stay on this script. The iam module's `iam-oidc-provider` and GitHub OIDC
 `iam-role` submodules are a possible future replacement (ADR-0008); we are not switching now.
 

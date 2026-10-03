@@ -36,6 +36,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "ValidateStateMachineDefinitionsWithoutName",
+      "Effect": "Allow",
+      "Action": "states:ValidateStateMachineDefinition",
+      "Resource": "arn:aws:states:${REGION}:${ACCOUNT_ID}:stateMachine:*"
+    },
+    {
       "Sid": "ReadDefaultEventBus",
       "Effect": "Allow",
       "Action": "events:DescribeEventBus",

@@ -174,6 +174,10 @@ check allowed cip-gha-dev lambda:GetFunction "${FN}:cip-dev-start-scan"
 check denied  cip-gha-dev lambda:GetFunction "${FN}:cip-prod-start-scan"
 check denied  cip-gha-dev states:DescribeExecution \
   "arn:aws:states:us-east-1:${ACCOUNT_ID}:execution:cip-prod-scan-pipeline:x"
+# states:ValidateStateMachineDefinition is not checked: the simulator returns implicitDeny
+# for it on every resource, so only a real deploy proves that allow.
+check denied  cip-gha-dev states:CreateStateMachine \
+  "arn:aws:states:us-east-1:${ACCOUNT_ID}:stateMachine:cip-prod-scan-pipeline"
 check denied  cip-gha-dev scheduler:GetSchedule \
   "arn:aws:scheduler:us-east-1:${ACCOUNT_ID}:schedule/default/cip-prod-scan"
 check denied  cip-gha-dev lambda:CreateFunctionUrlConfig "${FN}:cip-dev-start-scan"
