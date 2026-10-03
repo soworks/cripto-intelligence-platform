@@ -2391,18 +2391,20 @@ resource "aws_dynamodb_table" "ledger" {
     }
   }
 
-  global_secondary_index {
-    name            = "GSI1"
-    hash_key        = "GSI1PK"
-    range_key       = "GSI1SK"
-    projection_type = "ALL"
-  }
-
-  global_secondary_index {
-    name            = "GSI2"
-    hash_key        = "GSI2PK"
-    range_key       = "GSI2SK"
-    projection_type = "ALL"
+  dynamic "global_secondary_index" {
+    for_each = ["GSI1", "GSI2"]
+    content {
+      name            = global_secondary_index.value
+      projection_type = "ALL"
+      key_schema {
+        attribute_name = "${global_secondary_index.value}PK"
+        key_type       = "HASH"
+      }
+      key_schema {
+        attribute_name = "${global_secondary_index.value}SK"
+        key_type       = "RANGE"
+      }
+    }
   }
 
   point_in_time_recovery {
@@ -2471,7 +2473,7 @@ resource "aws_dynamodb_table" "counters" {
 }
 ```
 
-If `terraform validate` warns that `hash_key`/`range_key` inside `global_secondary_index` are deprecated in the installed provider, switch those two blocks to the provider's `key_schema` syntax shown in the warning; table behavior is unchanged.
+AWS provider 6.67 deprecates `hash_key`/`range_key` inside `global_secondary_index`, so the indexes use `key_schema` blocks (table-level `hash_key`/`range_key` are not deprecated).
 
 - [ ] **Step 3: Create `terraform/modules/platform-data/outputs.tf`**
 
