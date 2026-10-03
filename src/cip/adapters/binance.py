@@ -134,7 +134,6 @@ class BinanceMarketClient:
         while True:
             self._limiter.acquire()
             response = self._client.get(path, params=params)
-            self._observe_weight(response)
             status = response.status_code
             if status == 418:
                 raise ExchangeBannedError("Binance returned 418; the scan must stop")
@@ -142,6 +141,7 @@ class BinanceMarketClient:
                 raise ExchangeGeoBlockedError(
                     "Binance returned 451 from the configured market-data host"
                 )
+            self._observe_weight(response)
             if status != 429:
                 if status != 200:
                     raise MarketDataError(f"Binance returned HTTP {status}")
