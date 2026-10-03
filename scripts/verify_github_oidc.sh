@@ -13,6 +13,7 @@ IAM="arn:aws:iam::${ACCOUNT_ID}"
 STATE="arn:aws:s3:::cip-tfstate-${ACCOUNT_ID}"
 DDB="arn:aws:dynamodb:us-east-1:${ACCOUNT_ID}:table"
 FN="arn:aws:lambda:us-east-1:${ACCOUNT_ID}:function"
+BUS="arn:aws:events:us-east-1:${ACCOUNT_ID}:event-bus"
 failures=0
 
 check() {
@@ -48,6 +49,9 @@ check denied  cip-gha-plan iam:GetRole "${IAM}:role/cip-gha-dev"
 check denied  cip-gha-plan secretsmanager:GetSecretValue \
   "arn:aws:secretsmanager:us-east-1:${ACCOUNT_ID}:secret:cip/prod/binance"
 check denied  cip-gha-plan s3:GetBucketPolicy "arn:aws:s3:::cip-cloudtrail-${ACCOUNT_ID}"
+check allowed cip-gha-plan events:DescribeEventBus "${BUS}/default"
+check denied  cip-gha-plan events:DescribeEventBus "${BUS}/other"
+check denied  cip-gha-plan events:PutEvents "${BUS}/default"
 
 check denied  cip-gha-dev dynamodb:PutItem "${DDB}/cip-prod-ledger"
 check allowed cip-gha-dev dynamodb:CreateTable "${DDB}/cip-dev-ledger"
@@ -67,6 +71,8 @@ check denied  cip-gha-dev iam:PassRole "${IAM}:role/cip-dev-pipeline-lambda" \
 check denied  cip-gha-dev iam:DeleteRolePermissionsBoundary "${IAM}:role/cip-dev-pipeline-lambda"
 check denied  cip-gha-dev iam:UpdateAssumeRolePolicy "${IAM}:role/cip-gha-prod"
 check denied  cip-gha-dev iam:PutRolePolicy "${IAM}:role/cip-gha-dev"
+check allowed cip-gha-dev events:DescribeEventBus "${BUS}/default"
+check denied  cip-gha-dev events:PutRule "${BUS}/default"
 
 check denied  cip-gha-prod lambda:UpdateFunctionCode "${FN}:cip-dev-start-scan"
 check allowed cip-gha-prod lambda:UpdateFunctionCode "${FN}:cip-prod-start-scan"

@@ -1,6 +1,8 @@
 framework:
   - terraform
+download-external-modules: true
 skip-check:
+  - CKV_TF_1      # Registry modules are pinned to exact versions (ADR-0008); commit-hash git sources would drop registry resolution
   - CKV_AWS_117   # Lambda outside VPC by design: public exchange APIs, no NAT cost (ADR-0003)
   - CKV_AWS_116   # Lambda DLQ: Step Functions catches and records failures (ADR-0006)
   - CKV_AWS_173   # Lambda env var CMK: env vars hold no secrets
