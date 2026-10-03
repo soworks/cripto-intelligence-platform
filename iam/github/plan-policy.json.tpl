@@ -91,6 +91,12 @@
       ]
     },
     {
+      "Sid": "ReadDefaultEventBus",
+      "Effect": "Allow",
+      "Action": "events:DescribeEventBus",
+      "Resource": "arn:aws:events:${REGION}:${ACCOUNT_ID}:event-bus/default"
+    },
+    {
       "Sid": "ListOnlyActionsWithoutResourceScope",
       "Effect": "Allow",
       "Action": [

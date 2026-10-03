@@ -18,7 +18,14 @@ Creates:
 - `cip-tfstate-258485600712` state bucket (versioned, TLS-only, no public access, `prevent_destroy`)
 - Boundaries `cip-dev-workload-boundary`, `cip-prod-workload-boundary`
 - Budget `cip-monthly` (US$50; email at 20/50/100% actual and 100% forecast)
-- CloudTrail `cip-management` (multi-region, log validation, 1-year retention)
+- CloudTrail `cip-management` (multi-region, log validation, 1-year retention); its bucket
+  `cip-cloudtrail-258485600712` is `module.cloudtrail_bucket` (terraform-aws-modules/s3-bucket,
+  TLS-only policy plus the `aws:SourceArn`-scoped CloudTrail statements)
+
+Module usage follows ADR-0008: registry modules pinned to exact versions. The state bucket,
+boundaries, budget and trail are plain resources on purpose. When a refactor moves live
+resources into a module, add `moved {}` blocks and apply only a plan with 0 to destroy and
+no replacements.
 
 ## 2. GitHub OIDC provider and CI roles (AWS CLI)
     gh auth login                                  # enables repository_id pinning
@@ -47,6 +54,12 @@ Preview the exact documents without changing anything: `scripts/bootstrap_github
 `verify_github_oidc.sh` runs `iam:SimulatePrincipalPolicy` spot checks (for example: the
 plan role cannot read bootstrap state or the CloudTrail bucket; the dev role cannot touch
 `cip-prod-*` or create roles without the dev boundary) and exits non-zero on any mismatch.
+
+The plan and deploy roles have `events:DescribeEventBus` on `event-bus/default` only. The
+eventbridge module reads the default bus even though it only manages schedules (ADR-0008).
+
+The OIDC roles stay on this script. The iam module's `iam-oidc-provider` and GitHub OIDC
+`iam-role` submodules are a possible future replacement (ADR-0008); we are not switching now.
 
 ## After bootstrap
 - Confirm the AWS Budgets notification email if prompted.

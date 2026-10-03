@@ -229,3 +229,4 @@ build/
 tfplan
 plan.txt
 .terraform.tfstate.lock.info
+.external_modules/
