@@ -11,18 +11,38 @@ from cip.domain.events import LedgerEvent
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.service_resource import Table
 
+_NEW_ITEM = "attribute_not_exists(PK)"
+
 
 class LedgerRepository:
     def __init__(self, table: Table) -> None:
         self._table = table
 
     def append(self, event: LedgerEvent) -> None:
+        """Write the event plus an ``IDEMP#<event_id>`` guard item in one transaction.
+
+        The event SK is time-ordered, so only the guard makes a retried write collide.
+        """
+        item = event.to_item()
+        guard = {
+            "PK": f"IDEMP#{event.event_id}",
+            "SK": "IDEMP",
+            "event_pk": item["PK"],
+            "event_sk": item["SK"],
+        }
+        table = self._table.name
         try:
-            self._table.put_item(
-                Item=event.to_item(), ConditionExpression="attribute_not_exists(PK)"
+            # The table resource's client accepts plain Python values, not AttributeValue maps.
+            self._table.meta.client.transact_write_items(
+                TransactItems=[
+                    {"Put": {"TableName": table, "Item": guard, "ConditionExpression": _NEW_ITEM}},
+                    {"Put": {"TableName": table, "Item": item, "ConditionExpression": _NEW_ITEM}},
+                ]
             )
         except ClientError as error:
-            if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # Cancellation reasons are positional; index 0 is the guard.
+            reasons = error.response.get("CancellationReasons") or [{}]
+            if reasons[0].get("Code") == "ConditionalCheckFailed":
                 raise DuplicateEventError(event.event_id) from error
             raise
 

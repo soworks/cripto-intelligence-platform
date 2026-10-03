@@ -7,4 +7,8 @@ class PolicyError(CipError):
 
 
 class DuplicateEventError(CipError):
-    """A ledger event with the same key already exists."""
+    """A ledger event with the same identity already exists."""
+
+
+class InvalidEventError(CipError):
+    """A ledger event payload cannot be stored losslessly."""

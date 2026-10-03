@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import boto3
 import pytest
 
 from cip.config.flags import ExecutionFlags
@@ -14,6 +15,7 @@ from cip.persistence.ledger import LedgerRepository
 
 REPO_POLICY = Path(__file__).parents[3] / "policies" / "investment-policy.yaml"
 SHADOW = ExecutionFlags(ExecutionMode.SHADOW, trading_enabled=False, kill_switch_active=False)
+FLAGS_PREFIX = "/cip/test/flags"
 
 
 @pytest.fixture
@@ -71,6 +73,43 @@ def test_record_failure_truncates_cause(ledger_table: Any) -> None:
     assert len(event.payload["cause"]) == 1000
 
 
+def test_start_scan_retry_is_a_successful_replay(ledger_table: Any, policy: LoadedPolicy) -> None:
+    ledger = LedgerRepository(ledger_table)
+    first = run_start_scan({"correlation_id": "corr-9"}, ledger, SHADOW, policy)
+    retry = run_start_scan({"correlation_id": "corr-9"}, ledger, SHADOW, policy)
+
+    assert retry == first
+    assert len(ledger.list_by_correlation("corr-9")) == 1
+
+
+def test_complete_scan_retry_is_a_successful_replay(ledger_table: Any) -> None:
+    ledger = LedgerRepository(ledger_table)
+    request = {"correlation_id": "corr-9", "policy_version": "v1"}
+    first = run_complete_scan(request, ledger)
+    retry = run_complete_scan(request, ledger)
+
+    assert retry == first
+    assert len(ledger.list_by_correlation("corr-9")) == 1
+
+
+def test_record_failure_retry_is_a_successful_replay(ledger_table: Any) -> None:
+    ledger = LedgerRepository(ledger_table)
+    request = {"correlation_id": "corr-9", "error": {"Error": "E"}}
+    first = run_record_failure(request, ledger)
+    retry = run_record_failure(request, ledger)
+
+    assert retry == first
+    assert len(ledger.list_by_correlation("corr-9")) == 1
+
+
+def test_failures_without_correlation_id_are_all_recorded(ledger_table: Any) -> None:
+    ledger = LedgerRepository(ledger_table)
+    run_record_failure({"error": {"Error": "A"}}, ledger)
+    run_record_failure({"error": {"Error": "B"}}, ledger)
+
+    assert len(ledger.list_by_correlation("unknown")) == 2
+
+
 @dataclass(frozen=True)
 class FakeLambdaContext:
     function_name: str = "cip-test-pipeline"
@@ -82,13 +121,46 @@ class FakeLambdaContext:
 @pytest.fixture
 def lambda_env(ledger_table: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     monkeypatch.setenv("LEDGER_TABLE", ledger_table.name)
-    monkeypatch.setenv("FLAGS_PREFIX", "/cip/test/flags")
+    monkeypatch.setenv("FLAGS_PREFIX", FLAGS_PREFIX)
     monkeypatch.setenv("POLICY_PATH", str(REPO_POLICY))
-    pipeline._ledger.cache_clear()
-    pipeline._policy.cache_clear()
+    _clear_caches()
     yield ledger_table
+    _clear_caches()
+
+
+def _clear_caches() -> None:
     pipeline._ledger.cache_clear()
     pipeline._policy.cache_clear()
+    pipeline._ssm.cache_clear()
+
+
+def _put_flags(kill: str) -> None:
+    ssm = boto3.client("ssm", region_name="us-east-1")
+    for name, value in (("execution_mode", "SHADOW"), ("trading_enabled", "false")):
+        ssm.put_parameter(Name=f"{FLAGS_PREFIX}/{name}", Value=value, Type="String", Overwrite=True)
+    ssm.put_parameter(Name=f"{FLAGS_PREFIX}/kill_switch", Value=kill, Type="String", Overwrite=True)
+
+
+def test_flags_are_reread_every_invocation_through_a_cached_client(lambda_env: Any) -> None:
+    context = FakeLambdaContext()
+    _put_flags(kill="false")
+    pipeline.start_scan({"correlation_id": "corr-a"}, context)
+    _put_flags(kill="true")
+    pipeline.start_scan({"correlation_id": "corr-b"}, context)
+
+    ledger = LedgerRepository(lambda_env)
+    assert ledger.list_by_correlation("corr-a")[0].payload["kill_switch_active"] is False
+    assert ledger.list_by_correlation("corr-b")[0].payload["kill_switch_active"] is True
+    assert pipeline._ssm() is pipeline._ssm()
+
+
+def test_lambda_retry_returns_the_original_result(lambda_env: Any) -> None:
+    context = FakeLambdaContext()
+    first = pipeline.start_scan({"correlation_id": "corr-retry"}, context)
+    retry = pipeline.start_scan({"correlation_id": "corr-retry"}, context)
+
+    assert retry == first
+    assert len(LedgerRepository(lambda_env).list_by_correlation("corr-retry")) == 1
 
 
 def test_lambda_entry_points_wire_environment(lambda_env: Any) -> None:
