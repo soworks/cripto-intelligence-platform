@@ -30,6 +30,62 @@ are GitHub repository variables (not secrets; an ARN is not a credential).
   with `-lock=false` because the role cannot write the lock file.
 - `scripts/verify_github_oidc.sh` re-checks the boundaries with `iam:SimulatePrincipalPolicy`.
 
+## Amendment (2026-10-03): boundary as a real ceiling, resource-side protection (PR #1 review H1, M3-M7)
+Workload boundary (`terraform/bootstrap/boundaries.tf`):
+- Allows are scoped to the role's own environment: `table/cip-<env>-*`, `cip-<env>-*` buckets
+  (only when `aws:ResourceAccount` is this account), `/cip/<env>/*` parameters (read only),
+  `/aws/lambda/cip-<env>-*` log streams, and invoke/publish on `cip-<env>-*`.
+- `*` remains only where AWS has no resource scope: X-Ray, `cloudwatch:PutMetricData`,
+  Step Functions log delivery (`logs:*LogDelivery`, `PutResourcePolicy`), and
+  `bedrock:InvokeModel` (narrowed to model ARNs in Phase 2).
+- `kms:Decrypt` requires `kms:ViaService` = SSM, Secrets Manager, DynamoDB or S3.
+- Explicit denies:
+  - everything on `cip-tfstate-*` and `cip-cloudtrail-*`;
+  - flag writes (`PutParameter`, `DeleteParameter*`, `(Un)LabelParameterVersion`) on
+    `/cip/*/{execution_mode,trading_enabled,kill_switch}`;
+  - ledger item mutation and table-level tampering (see ADR-0005);
+  - function URLs.
+
+Deploy roles (`iam/github/deploy-policy.json.tpl`):
+- Workload roles live on the IAM path `/cip/<env>/`. `CreateRole`, `PutRolePolicy` and
+  `DeleteRolePolicy` require `iam:PermissionsBoundary` = the env boundary. Update, tag,
+  delete and `PassRole` are limited to that path. `iam:UpdateAssumeRolePolicy` does not
+  support `iam:PermissionsBoundary`, so the path stands in for it: the deploy role can only
+  modify roles it created there, and it could only create them with the boundary.
+- No managed policies: `AttachRolePolicy` and boundary edits (`CreatePolicyVersion`,
+  `SetDefaultPolicyVersion`, `DeletePolicy*`, `Put/DeleteRolePermissionsBoundary`) are
+  explicitly denied, and `CreatePolicy` is denied outside `cip-<env>-*`.
+- Reads go through the environment-scoped `ManageEnvironmentResources` statement. Only
+  `sts:GetCallerIdentity`, `ssm:DescribeParameters`, `logs:DescribeLogGroups` and Step
+  Functions log delivery use `*`, so `cip-gha-dev` cannot read `cip-prod-*` configuration
+  and vice versa.
+- S3 statements require `aws:ResourceAccount` = this account, except `s3:CreateBucket`
+  (name-scoped; a bucket can only be created in the caller's account).
+- Explicit denies: ledger item writes and `DeleteTable`; function URLs and
+  `lambda:AddPermission` for `Principal: *`; `PutBucketPublicAccessBlock`,
+  `PutAccountPublicAccessBlock`, `PutBucketAcl`, `PutObjectAcl` and
+  `PutBucketOwnershipControls`. `PutBucketPolicy` stays because the TLS-only policies need it.
+- `logs:PutResourcePolicy` stays on `*` (Step Functions log delivery; no resource scope).
+
+Plan role: dev only. It has no prod state, parameters or resource reads, and its S3 reads
+also require `aws:ResourceAccount`.
+
+Resource side:
+- Account-level S3 Block Public Access (all four settings). Before enabling it, the only
+  buckets in the account were the state and CloudTrail buckets, and neither was public.
+- State bucket policy. Admin principals are `user/asolano` and the account root.
+  - `bootstrap/*` is readable and writable only by the admin principals.
+  - `env/dev/*` is writable only by `cip-gha-dev` and the admins.
+  - `env/prod/*` is readable and writable only by `cip-gha-prod` and the admins.
+- CloudTrail bucket: versioning plus Object Lock (GOVERNANCE, 90 days). Deletes,
+  governance bypass, retention, policy, versioning, Object Lock and lifecycle changes are
+  denied to all non-admin principals. The TLS-only deny is kept.
+- `scripts/verify_github_oidc.sh` checks four things with the IAM policy simulator:
+  - the CI roles;
+  - the boundary as a ceiling over an admin identity policy (`simulate-custom-policy`);
+  - the live state and CloudTrail bucket policies, per principal ARN;
+  - cross-account S3 (`aws:ResourceAccount`).
+
 ## Consequences
 Lower setup cost than AWS Organizations. Blast radius is limited by IAM, not by an
 account boundary. Revisit before M7 if the prod trading secret's risk profile
