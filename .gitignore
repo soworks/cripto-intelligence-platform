@@ -222,6 +222,7 @@ __marimo__/
 # Build and infrastructure artifacts
 build/
 *.zip
+!tests/fixtures/binance-vision/*.zip
 .terraform/
 *.tfstate
 *.tfstate.*

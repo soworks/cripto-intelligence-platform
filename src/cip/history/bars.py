@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from typing import cast
 
 from cip.domain.errors import HistoryError
 
@@ -75,11 +76,9 @@ def _parse_row(symbol: str, line: str) -> DailyBar:
     close_time = _whole(fields[6])
     unit = "us" if open_time >= _MICROSECOND_FLOOR else "ms"
     step = _DAY_US if unit == "us" else _DAY_MS
-    if open_time % step != 0 or not (open_time <= close_time < open_time + step):
+    if open_time % step != 0 or not (open_time < close_time < open_time + step):
         raise HistoryError("kline bar must cover one UTC day")
     opened = datetime.fromtimestamp(open_time / (1_000_000 if unit == "us" else 1_000), UTC)
-    if opened.timetuple()[3:6] != (0, 0, 0):
-        raise HistoryError("kline bar must open at midnight")
     prices = [_decimal(fields[index]) for index in (1, 2, 3, 4)]
     volumes = [_decimal(fields[index]) for index in (5, 7, 9, 10)]
     open_, high, low, close = prices
@@ -125,9 +124,7 @@ def _decimal(text: str) -> Decimal:
         raise HistoryError("kline decimal field is invalid") from error
     if not value.is_finite():
         raise HistoryError("kline decimal field is invalid")
-    exponent = value.as_tuple().exponent
-    if not isinstance(exponent, int):
-        raise HistoryError("kline decimal field is invalid")
+    exponent = cast(int, value.as_tuple().exponent)
     fraction_digits = -exponent if exponent < 0 else 0
     integer_digits = len(value.as_tuple().digits) - fraction_digits
     if fraction_digits > _MAX_FRACTION_DIGITS or integer_digits > _MAX_INTEGER_DIGITS:
