@@ -15,6 +15,8 @@ concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Only the terraform job can request an OIDC token. Tools that are downloaded at run
+# time (uv, tflint, checkov) and the Lambda build run in jobs without id-token.
 jobs:
   python:
     runs-on: ubuntu-24.04
@@ -24,6 +26,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.23"
           enable-cache: true
       - run: uv sync --all-groups --frozen
       - run: uv run ruff format --check .
@@ -32,7 +35,44 @@ jobs:
       - run: uv run pytest --cov --cov-report=term-missing
       - run: uv run pip-audit --skip-editable
 
+  static-analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.64.0
+      - run: terraform fmt -check -recursive terraform
+      - run: tflint --chdir=terraform --recursive
+      - run: uvx --from "checkov==3.3.22" checkov --directory terraform --config-file .checkov.yaml --quiet --compact
+
+  lambda-artifact:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+      - run: ./scripts/build_lambda.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cip-lambda
+          path: build/cip-lambda.zip
+          if-no-files-found: error
+          retention-days: 1
+
   terraform:
+    needs: [static-analysis, lambda-artifact]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -41,15 +81,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.16.5
-      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
-      - run: terraform fmt -check -recursive terraform
-      - run: tflint --chdir=terraform --recursive
-      - run: uvx checkov --directory terraform --config-file .checkov.yaml --quiet --compact
-      - run: ./scripts/build_lambda.sh
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cip-lambda
+          path: build
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_PLAN }}
