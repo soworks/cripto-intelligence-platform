@@ -45,7 +45,9 @@ module "market_probe_lambda" {
   runtime       = "python3.13"
   architectures = ["arm64"]
   memory_size   = 256
-  timeout       = 15
+  # One attempt may wait out the 60s weight window, then spend 10s + 1s + 10s + 2s + 10s
+  # on the 429 backoff. 120s leaves that sequence room to finish and emit GeoBlocked.
+  timeout = 120
 
   create_package         = false
   local_existing_package = var.artifact_path

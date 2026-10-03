@@ -145,6 +145,25 @@ def test_status_418_stops_without_retry() -> None:
     assert calls == 1
 
 
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [(418, ExchangeBannedError), (451, ExchangeGeoBlockedError)],
+)
+def test_block_statuses_win_over_a_bad_weight_header(status: int, error: type[Exception]) -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            status, headers={"X-MBX-USED-WEIGHT-1M": "nope"}, json={"msg": "blocked"}
+        )
+
+    with _client(handler) as client, pytest.raises(error):
+        client.exchange_info()
+    assert calls == 1
+
+
 def test_status_451_stops_without_retry() -> None:
     calls = 0
 
