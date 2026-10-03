@@ -1,0 +1,58 @@
+{
+  "Comment": "CIP scan pipeline - Phase 1 skeleton",
+  "StartAt": "HasCorrelationId",
+  "States": {
+    "HasCorrelationId": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.correlation_id", "IsPresent": true, "Next": "StartScan" }],
+      "Default": "AssignCorrelationId"
+    },
+    "AssignCorrelationId": {
+      "Type": "Pass",
+      "Parameters": { "correlation_id.$": "States.UUID()" },
+      "Next": "StartScan"
+    },
+    "StartScan": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": { "FunctionName": "${start_scan_arn}", "Payload.$": "$" },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordFailure" }],
+      "Next": "CompleteScan"
+    },
+    "CompleteScan": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": { "FunctionName": "${complete_scan_arn}", "Payload.$": "$" },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "RecordFailure" }],
+      "End": true
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": { "FunctionName": "${record_failure_arn}", "Payload.$": "$" },
+      "OutputPath": "$.Payload",
+      "Next": "Failed"
+    },
+    "Failed": { "Type": "Fail", "Error": "PipelineFailed", "Cause": "See PIPELINE_FAILED ledger event" }
+  }
+}
