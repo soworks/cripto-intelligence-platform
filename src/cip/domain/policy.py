@@ -1,18 +1,46 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Hashable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
 
 from cip.domain.errors import PolicyError
 
+
+def _exact_type(kind: type) -> BeforeValidator:
+    # Strict Literal still treats 1 == True, so pin the YAML scalar type first.
+    def check(value: object) -> object:
+        if type(value) is not kind:
+            raise ValueError(f"must be a {kind.__name__}")
+        return value
+
+    return BeforeValidator(check)
+
+
 Fraction = Annotated[float, Field(gt=0, le=1)]
 PositiveUsd = Annotated[float, Field(gt=0)]
+Symbols = Annotated[tuple[StrictStr, ...], Field(strict=False)]
+AlwaysTrue = Annotated[Literal[True], _exact_type(bool)]
+AlwaysFalse = Annotated[Literal[False], _exact_type(bool)]
+
+# Hard ceilings far above the reference policy, so a typo cannot authorise an outsized trade.
+MAX_TRADE_USD_CEILING = 10_000
+MAX_DAILY_TRADE_USD_CEILING = 25_000
+MAX_MONTHLY_TRADE_USD_CEILING = 100_000
 
 
 class ExecutionMode(StrEnum):
@@ -22,11 +50,11 @@ class ExecutionMode(StrEnum):
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class UniversePolicy(_Strict):
-    quote_assets: tuple[str, ...] = Field(min_length=1)
+    quote_assets: Annotated[Symbols, Field(min_length=1)]
     exclude_stablecoins: bool
     exclude_leveraged_tokens: bool
     minimum_trading_history_days: int = Field(ge=0)
@@ -53,25 +81,25 @@ class DiscoveryPolicy(_Strict):
 
 
 class PortfolioPolicy(_Strict):
-    core_assets: tuple[str, ...]
+    core_assets: Symbols
     discovery_max_portfolio_pct: Fraction
 
 
 class TradingPolicy(_Strict):
-    spot_only: Literal[True]
-    margin_enabled: Literal[False]
-    futures_enabled: Literal[False]
-    leverage_enabled: Literal[False]
-    withdrawals_enabled: Literal[False]
+    spot_only: AlwaysTrue
+    margin_enabled: AlwaysFalse
+    futures_enabled: AlwaysFalse
+    leverage_enabled: AlwaysFalse
+    withdrawals_enabled: AlwaysFalse
 
 
 class RiskPolicy(_Strict):
-    max_trade_usd: PositiveUsd
+    max_trade_usd: Annotated[PositiveUsd, Field(le=MAX_TRADE_USD_CEILING)]
     max_trade_portfolio_pct: Fraction
     minimum_cash_reserve_pct: Fraction
     max_discovery_asset_pct: Fraction
-    max_daily_trade_usd: PositiveUsd
-    max_monthly_trade_usd: PositiveUsd
+    max_daily_trade_usd: Annotated[PositiveUsd, Field(le=MAX_DAILY_TRADE_USD_CEILING)]
+    max_monthly_trade_usd: Annotated[PositiveUsd, Field(le=MAX_MONTHLY_TRADE_USD_CEILING)]
 
     @model_validator(mode="after")
     def _limits_nest(self) -> Self:
@@ -92,12 +120,12 @@ class AiPolicy(_Strict):
 
 
 class ExecutionPolicy(_Strict):
-    mode: ExecutionMode
-    human_approval_required: Literal[True]
+    mode: Annotated[ExecutionMode, Field(strict=False)]
+    human_approval_required: AlwaysTrue
 
 
 class InvestmentPolicy(_Strict):
-    schema_version: Literal[1]
+    schema_version: Annotated[Literal[1], _exact_type(int)]
     universe: UniversePolicy
     discovery: DiscoveryPolicy
     portfolio: PortfolioPolicy
@@ -105,6 +133,25 @@ class InvestmentPolicy(_Strict):
     risk: RiskPolicy
     ai: AiPolicy
     execution: ExecutionPolicy
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys instead of keeping the last one."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
+        mapping = super().construct_mapping(node, deep=deep)
+        seen: set[Hashable] = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return mapping
 
 
 @dataclass(frozen=True)
@@ -119,7 +166,8 @@ def load_policy(path: Path) -> LoadedPolicy:
     except OSError as error:
         raise PolicyError(f"cannot read policy file {path}") from error
     try:
-        policy = InvestmentPolicy.model_validate(yaml.safe_load(raw))
+        document = yaml.load(raw, Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+        policy = InvestmentPolicy.model_validate(document)
     except (yaml.YAMLError, ValidationError) as error:
         raise PolicyError(f"invalid policy file {path}: {error}") from error
     return LoadedPolicy(policy=policy, version=hashlib.sha256(raw).hexdigest())
