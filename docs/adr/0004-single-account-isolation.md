@@ -80,6 +80,10 @@ Resource side:
 - CloudTrail bucket: versioning plus Object Lock (GOVERNANCE, 90 days). Deletes,
   governance bypass, retention, policy, versioning, Object Lock and lifecycle changes are
   denied to all non-admin principals. The TLS-only deny is kept.
+  GOVERNANCE was chosen over COMPLIANCE on purpose (decision 2026-10-03): COMPLIANCE
+  retention cannot be shortened or removed by anyone, including root, until it expires,
+  and the bucket could not be deleted for 90 days. In GOVERNANCE mode only the admin
+  principals can bypass retention, and the tamper-deny blocks everyone else.
 - `scripts/verify_github_oidc.sh` checks four things with the IAM policy simulator:
   - the CI roles;
   - the boundary as a ceiling over an admin identity policy (`simulate-custom-policy`);

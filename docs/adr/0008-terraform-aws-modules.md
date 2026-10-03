@@ -11,7 +11,8 @@ type we use except CloudTrail, budgets and the permission boundaries.
 
 ## Decision
 Root configurations (`terraform/bootstrap`, `terraform/environments/<env>`) call registry
-modules directly. There are no local modules. Every call pins an exact version
+modules directly. There are no local modules until M4, when one thin shared wrapper is
+added for dev and prod (see Consequences). Every call pins an exact version
 (`version = "x.y.z"`), the latest compatible with AWS provider `~> 6.67` and Terraform
 `~> 1.16`. Upgrades are explicit PRs.
 
@@ -50,7 +51,8 @@ Module settings that keep the security posture:
 ## Remaining plain resources
 - `aws_s3_bucket.tf_state` and its configuration: `prevent_destroy` cannot be set on
   a resource inside a module. The state bucket is the one resource that must never be
-  deleted by a plan.
+  deleted by a plan. Decision 2026-10-03: it stays a plain resource with
+  `prevent_destroy`; it does not move to the s3-bucket module.
 - `aws_iam_policy.workload_boundary`: the boundaries are the control that limits every
   CI-created role. They stay as reviewed, plain policy documents.
 - `aws_budgets_budget.monthly`: there is no terraform-aws-modules budget module.
@@ -66,8 +68,10 @@ Module settings that keep the security posture:
   `events:DescribeEventBus` on `event-bus/default` only.
 - The DynamoDB module still sets the deprecated GSI `hash_key` / `range_key`, which
   produces provider deprecation warnings until upstream moves to `key_schema`.
-- A future prod root is a copy of `environments/dev` with different locals. If the
-  duplication grows, a thin composition module can be reintroduced.
+- Prod (M4) will not be a copy of `environments/dev`. One thin shared local module wraps
+  the community modules, and both `environments/dev` and `environments/prod` call it
+  with their own locals, so the two environments cannot drift (decision 2026-10-03).
+  The wrapper only composes registry modules; it does not reimplement resources.
 - The GitHub OIDC provider and the `cip-gha-*` roles stay on
   `scripts/bootstrap_github_oidc.sh` (ADR-0004 amendment). The iam module's
   `iam-oidc-provider` and `iam-role` (`enable_github_oidc`) submodules are a possible future
