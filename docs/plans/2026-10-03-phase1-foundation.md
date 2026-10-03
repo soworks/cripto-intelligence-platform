@@ -48,7 +48,10 @@ cripto-intelligence-platform/
 │   ├── reviews/
 │   └── runbooks/bootstrap.md
 ├── policies/investment-policy.yaml
+├── iam/github/                     # CI role policy templates (plan, deploy)
 ├── scripts/build_lambda.sh         # deterministic arm64 Lambda ZIP
+├── scripts/bootstrap_github_oidc.sh  # idempotent OIDC provider + cip-gha-* roles (AWS CLI)
+├── scripts/verify_github_oidc.sh   # IAM simulation spot checks for the CI roles
 ├── src/cip/
 │   ├── __init__.py
 │   ├── config/{__init__,flags}.py          # SSM execution flags, fail-closed
@@ -56,7 +59,7 @@ cripto-intelligence-platform/
 │   ├── handlers/{__init__,pipeline}.py     # Lambda entry points
 │   └── persistence/{__init__,ledger}.py    # append-only ledger repository
 ├── terraform/
-│   ├── bootstrap/                  # state bucket, OIDC, CI roles, boundaries, budgets, CloudTrail
+│   ├── bootstrap/                  # state bucket, boundaries, budgets, CloudTrail (OIDC roles: scripts/bootstrap_github_oidc.sh)
 │   ├── modules/                    # each module has its own versions.tf
 │   │   ├── alerts/
 │   │   ├── platform-data/          # S3 data bucket, ledger/state/counters tables
@@ -1786,13 +1789,13 @@ git commit -m "build: add deterministic arm64 lambda artifact script"
 
 ### Task 9: Terraform bootstrap (applied locally once)
 
-Creates the Terraform state bucket, GitHub OIDC provider, CI roles, per-env workload permission boundaries, a monthly budget, and a CloudTrail trail.
+Creates the Terraform state bucket, per-env workload permission boundaries, a monthly budget, and a CloudTrail trail with Terraform; then the GitHub OIDC provider and CI roles with an AWS CLI script (owner choice, ADR-0004).
 
 **Files:**
-- Create: `terraform/bootstrap/versions.tf`, `terraform/bootstrap/variables.tf`, `terraform/bootstrap/state.tf`, `terraform/bootstrap/oidc.tf`, `terraform/bootstrap/boundaries.tf`, `terraform/bootstrap/budget.tf`, `terraform/bootstrap/cloudtrail.tf`, `terraform/bootstrap/outputs.tf`, `terraform/bootstrap/terraform.tfvars`, `docs/runbooks/bootstrap.md`
+- Create: `terraform/bootstrap/versions.tf`, `terraform/bootstrap/variables.tf`, `terraform/bootstrap/state.tf`, `terraform/bootstrap/boundaries.tf`, `terraform/bootstrap/budget.tf`, `terraform/bootstrap/cloudtrail.tf`, `terraform/bootstrap/outputs.tf`, `terraform/bootstrap/terraform.tfvars`, `terraform/bootstrap/backend.tf`, `iam/github/plan-policy.json.tpl`, `iam/github/deploy-policy.json.tpl`, `scripts/bootstrap_github_oidc.sh`, `scripts/verify_github_oidc.sh`, `docs/runbooks/bootstrap.md`
 
 **Interfaces:**
-- Produces (outputs): `state_bucket` = `cip-tfstate-258485600712`; `role_arns` = `{plan, dev, prod}` for `cip-gha-plan|dev|prod`; IAM policies `cip-dev-workload-boundary` and `cip-prod-workload-boundary`.
+- Produces: Terraform outputs `state_bucket` = `cip-tfstate-258485600712` and `workload_boundary_arns` (`cip-dev-workload-boundary`, `cip-prod-workload-boundary`); script output `AWS_ROLE_PLAN|DEV|PROD` for roles `cip-gha-plan|dev|prod`.
 
 - [ ] **Step 1: Check for an existing CloudTrail trail**
 
@@ -1995,169 +1998,41 @@ resource "aws_iam_policy" "workload_boundary" {
 }
 ```
 
-- [ ] **Step 6: Create `terraform/bootstrap/oidc.tf`**
+- [ ] **Step 6: GitHub OIDC provider and CI roles via AWS CLI (owner choice; not Terraform)**
 
-```hcl
-resource "aws_iam_openid_connect_provider" "github" {
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
-}
+The OIDC provider and the `cip-gha-plan|dev|prod` roles are managed by an idempotent,
+versioned script instead of Terraform (see ADR-0004 amendment). Files:
+- `iam/github/plan-policy.json.tpl` - scoped read-only policy for PR plans: Describe/Get/List
+  on `cip-dev-*` / `cip-prod-*` resources and `/cip/*` parameters; `s3:GetObject` and
+  `s3:ListBucket` (prefix-conditioned) only on the state bucket's `env/dev/` and `env/prod/`
+  prefixes (no bootstrap state, no CloudTrail bucket); `sts:GetCallerIdentity`; and the
+  list-only `ssm:DescribeParameters` / `logs:DescribeLogGroups`, which have no resource scope.
+  No `ReadOnlyAccess`.
+- `iam/github/deploy-policy.json.tpl` - per-env deploy policy (`${ENV}` = dev|prod): state
+  objects under `env/${ENV}/`, read-for-planning, full control only of `cip-${ENV}-*`
+  resources, `iam:CreateRole`/`PutRolePolicy` only with `cip-${ENV}-workload-boundary`,
+  `iam:PassRole` only to lambda/states/scheduler, explicit deny on boundary tampering.
+- `scripts/bootstrap_github_oidc.sh` - creates the provider if missing; creates or updates
+  each role (trust policy, max session 3600, tags), detaches all managed policies, deletes
+  unexpected inline policies, and puts the expected one. Trust conditions (`StringEquals`):
+  `aud = sts.amazonaws.com`; exact `sub` = `repo:soworks/cripto-intelligence-platform:pull_request`,
+  `:environment:dev`, `:environment:prod`; plus `repository_id` and `repository_owner_id`
+  from `gh api repos/soworks/cripto-intelligence-platform` when `gh` is authenticated
+  (otherwise it prints a WARNING and pinning is a follow-up rerun). `--dry-run` prints the
+  rendered documents.
+- `scripts/verify_github_oidc.sh` - `iam:SimulatePrincipalPolicy` spot checks with expected
+  decisions; exits non-zero on mismatch.
 
-locals {
-  oidc_subjects = {
-    plan = "repo:${var.github_repository}:pull_request"
-    dev  = "repo:${var.github_repository}:environment:dev"
-    prod = "repo:${var.github_repository}:environment:prod"
-  }
-}
+Run after Step 12 (any time; the script only references the boundary ARNs by name):
 
-data "aws_iam_policy_document" "github_trust" {
-  for_each = local.oidc_subjects
-
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    principals {
-      type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = [each.value]
-    }
-  }
-}
-
-resource "aws_iam_role" "github" {
-  for_each             = local.oidc_subjects
-  name                 = "cip-gha-${each.key}"
-  assume_role_policy   = data.aws_iam_policy_document.github_trust[each.key].json
-  max_session_duration = 3600
-}
-
-resource "aws_iam_role_policy_attachment" "plan_read_only" {
-  role       = aws_iam_role.github["plan"].name
-  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
-}
-
-data "aws_iam_policy_document" "deploy" {
-  for_each = local.environments
-
-  statement {
-    sid       = "TerraformState"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = ["${aws_s3_bucket.tf_state.arn}/env/${each.key}/*"]
-  }
-
-  statement {
-    sid       = "TerraformStateList"
-    actions   = ["s3:ListBucket"]
-    resources = [aws_s3_bucket.tf_state.arn]
-  }
-
-  statement {
-    sid = "ReadForPlanning"
-    actions = [
-      "iam:Get*", "iam:List*", "iam:SimulatePrincipalPolicy",
-      "lambda:Get*", "lambda:List*",
-      "states:Describe*", "states:List*",
-      "dynamodb:Describe*", "dynamodb:List*",
-      "s3:GetBucket*", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration",
-      "s3:GetReplicationConfiguration", "s3:GetAccelerateConfiguration",
-      "s3:ListAllMyBuckets",
-      "ssm:Describe*", "ssm:ListTagsForResource",
-      "sns:Get*", "sns:List*",
-      "logs:Describe*", "logs:ListTagsForResource", "logs:ListTagsLogGroup",
-      "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
-      "scheduler:Get*", "scheduler:List*",
-      "sts:GetCallerIdentity",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid = "StepFunctionsLogDelivery"
-    actions = [
-      "logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery",
-      "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy",
-      "logs:DescribeResourcePolicies",
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid     = "ManageEnvironmentResources"
-    actions = ["lambda:*", "states:*", "dynamodb:*", "s3:*", "ssm:*", "sns:*", "logs:*", "cloudwatch:*", "scheduler:*"]
-    resources = [
-      "arn:aws:lambda:${var.region}:${local.account_id}:function:cip-${each.key}-*",
-      "arn:aws:states:${var.region}:${local.account_id}:stateMachine:cip-${each.key}-*",
-      "arn:aws:states:${var.region}:${local.account_id}:execution:cip-${each.key}-*",
-      "arn:aws:dynamodb:${var.region}:${local.account_id}:table/cip-${each.key}-*",
-      "arn:aws:s3:::cip-${each.key}-*",
-      "arn:aws:ssm:${var.region}:${local.account_id}:parameter/cip/${each.key}/*",
-      "arn:aws:sns:${var.region}:${local.account_id}:cip-${each.key}-*",
-      "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/lambda/cip-${each.key}-*",
-      "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/vendedlogs/states/cip-${each.key}-*",
-      "arn:aws:cloudwatch:${var.region}:${local.account_id}:alarm:cip-${each.key}-*",
-      "arn:aws:cloudwatch::${local.account_id}:dashboard/cip-${each.key}-*",
-      "arn:aws:scheduler:${var.region}:${local.account_id}:schedule/default/cip-${each.key}-*",
-    ]
-  }
-
-  statement {
-    sid = "CreateBoundedWorkloadRoles"
-    actions = [
-      "iam:CreateRole", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
-      "iam:AttachRolePolicy", "iam:DetachRolePolicy",
-    ]
-    resources = ["arn:aws:iam::${local.account_id}:role/cip-${each.key}-*"]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PermissionsBoundary"
-      values   = [aws_iam_policy.workload_boundary[each.key].arn]
-    }
-  }
-
-  statement {
-    sid = "MaintainWorkloadRoles"
-    actions = [
-      "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateRoleDescription",
-      "iam:UpdateAssumeRolePolicy", "iam:TagRole", "iam:UntagRole",
-    ]
-    resources = ["arn:aws:iam::${local.account_id}:role/cip-${each.key}-*"]
-  }
-
-  statement {
-    sid       = "PassWorkloadRoles"
-    actions   = ["iam:PassRole"]
-    resources = ["arn:aws:iam::${local.account_id}:role/cip-${each.key}-*"]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["lambda.amazonaws.com", "states.amazonaws.com", "scheduler.amazonaws.com"]
-    }
-  }
-
-  statement {
-    sid       = "ProtectBoundaries"
-    effect    = "Deny"
-    actions   = ["iam:DeleteRolePermissionsBoundary", "iam:PutRolePermissionsBoundary", "iam:CreatePolicyVersion", "iam:DeletePolicy"]
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_role_policy" "deploy" {
-  for_each = local.environments
-  name     = "cip-${each.key}-deploy"
-  role     = aws_iam_role.github[each.key].id
-  policy   = data.aws_iam_policy_document.deploy[each.key].json
-}
+```bash
+scripts/bootstrap_github_oidc.sh --profile soworks
+scripts/verify_github_oidc.sh --profile soworks
+scripts/bootstrap_github_oidc.sh --profile soworks   # rerun: no detach/delete/untag lines
 ```
+
+Expected: three `AWS_ROLE_*=arn:aws:iam::258485600712:role/cip-gha-*` lines and
+`all checks matched`.
 
 - [ ] **Step 7: Create `terraform/bootstrap/budget.tf`**
 
@@ -2290,8 +2165,8 @@ output "state_bucket" {
   value = aws_s3_bucket.tf_state.id
 }
 
-output "role_arns" {
-  value = { for key, role in aws_iam_role.github : key => role.arn }
+output "workload_boundary_arns" {
+  value = { for env, policy in aws_iam_policy.workload_boundary : env => policy.arn }
 }
 ```
 
@@ -2312,7 +2187,7 @@ terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
-Expected: `Apply complete!` with outputs `state_bucket = "cip-tfstate-258485600712"` and three role ARNs. Confirm the AWS Budgets email subscription if prompted.
+Expected: `Apply complete!` with outputs `state_bucket = "cip-tfstate-258485600712"` and two boundary ARNs. Confirm the AWS Budgets email subscription if prompted.
 
 - [ ] **Step 12: Migrate bootstrap state into the bucket** - create `terraform/bootstrap/backend.tf`
 
@@ -2334,37 +2209,21 @@ Expected: `Successfully configured the backend "s3"!`, and `terraform plan` repo
 
 - [ ] **Step 13: Write `docs/runbooks/bootstrap.md`**
 
-```markdown
-# Bootstrap runbook
-
-Applied once, locally, by the account owner. CI never applies `terraform/bootstrap`.
-
-## Prerequisites
-- AWS CLI profile `soworks` with administrator rights; MFA enabled on root and on IAM user `asolano`.
-- Terraform 1.16.5 (`tfenv use 1.16.5`).
-
-## Apply / change
-    cd terraform/bootstrap
-    terraform init
-    terraform plan -out=tfplan && terraform apply tfplan
-
-## What it creates
-- `cip-tfstate-258485600712` state bucket (versioned, TLS-only, no public access)
-- GitHub OIDC provider; roles `cip-gha-plan` (PRs, ReadOnlyAccess), `cip-gha-dev`, `cip-gha-prod`
-- Boundaries `cip-dev-workload-boundary`, `cip-prod-workload-boundary`
-- Budget `cip-monthly` (US$50; email at 20/50/100% actual and 100% forecast)
-- CloudTrail `cip-management` (multi-region, log validation, 1-year retention)
-
-## After bootstrap
-- Replace the `asolano` access key with short-lived credentials (IAM Identity Center or `aws login`).
-```
+Document both halves: (1) the Terraform bootstrap apply/change procedure and what it
+creates (state bucket, boundaries, budget, CloudTrail; state at
+`s3://cip-tfstate-258485600712/bootstrap/terraform.tfstate`); (2) the OIDC script:
+`gh auth login`, `scripts/bootstrap_github_oidc.sh --profile soworks`,
+`scripts/verify_github_oidc.sh --profile soworks`, what each run converges (provider,
+trust conditions, inline-only policies, max session 3600), `--dry-run`, and that it is
+rerun after any edit under `iam/github/`. After bootstrap: confirm the Budgets email and
+replace the `asolano` access key with short-lived credentials.
 
 - [ ] **Step 14: Commit**
 
 ```bash
 cd ../..
-git add terraform/bootstrap docs/runbooks/bootstrap.md
-git commit -m "infra: add terraform bootstrap (state, oidc, boundaries, budget, cloudtrail)"
+git add terraform/bootstrap iam/github scripts/bootstrap_github_oidc.sh scripts/verify_github_oidc.sh docs/runbooks/bootstrap.md
+git commit -m "infra: add terraform bootstrap and CLI-managed github oidc roles"
 ```
 
 ---
@@ -2386,14 +2245,12 @@ Expected: logged in; visibility `PRIVATE` or `PUBLIC`. Environment required revi
 
 ```bash
 REPO=soworks/cripto-intelligence-platform
-cd terraform/bootstrap
 gh variable set AWS_REGION --repo $REPO --body us-east-1
-gh variable set TF_STATE_BUCKET --repo $REPO --body "$(terraform output -raw state_bucket)"
-for role in plan dev prod; do
-  gh variable set "AWS_ROLE_$(echo $role | tr a-z A-Z)" --repo $REPO \
-    --body "$(terraform output -json role_arns | jq -r .$role)"
+gh variable set TF_STATE_BUCKET --repo $REPO \
+  --body "$(terraform -chdir=terraform/bootstrap output -raw state_bucket)"
+scripts/bootstrap_github_oidc.sh --profile soworks | grep '^AWS_ROLE_' | while IFS='=' read -r name arn; do
+  gh variable set "$name" --repo $REPO --body "$arn"
 done
-cd ../..
 gh variable list --repo $REPO
 ```
 
@@ -3156,8 +3013,11 @@ provider "aws" {
   }
 }
 
-data "aws_iam_policy" "boundary" {
-  name = "cip-dev-workload-boundary"
+data "aws_caller_identity" "current" {}
+
+locals {
+  # Built from the account ID: the PR plan role has no iam:ListPolicies.
+  boundary_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/cip-dev-workload-boundary"
 }
 
 module "data" {
@@ -3185,7 +3045,7 @@ module "pipeline" {
   ledger_table_arn         = module.data.ledger_table_arn
   flags_prefix             = module.flags.prefix
   alarm_topic_arn          = module.alerts.topic_arn
-  permissions_boundary_arn = data.aws_iam_policy.boundary.arn
+  permissions_boundary_arn = local.boundary_arn
 }
 ```
 
