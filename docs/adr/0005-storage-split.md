@@ -17,3 +17,20 @@ Status: Accepted (2026-10-03)
 
 ## Consequences
 Ledger events reference snapshot S3 keys with SHA-256 hashes, which keeps items small.
+
+## Amendment (2026-10-03): append-only enforcement and its IAM limits (PR #1 review M3)
+- Workload boundary: denies `UpdateItem`, `DeleteItem`, `BatchWriteItem`, PartiQL
+  update/delete, `UpdateTable`, `DeleteTable`, `UpdateTimeToLive`,
+  `UpdateContinuousBackups`, `RestoreTableFromBackup`, `RestoreTableToPointInTime`,
+  `ImportTable`, `DeleteBackup` and resource-policy changes on `cip-<env>-ledger` (and its
+  backups).
+- Deploy roles: deny `PutItem`, `UpdateItem`, `DeleteItem`, `BatchWriteItem`,
+  `PartiQLInsert/Update/Delete` and `DeleteTable` on `cip-<env>-ledger`. CI manages the
+  table, never its items. Deletion protection is on in prod.
+- IAM limit: `dynamodb:PutItem` cannot be restricted to "new items only". A principal
+  allowed to `PutItem` can overwrite an existing item unconditionally. Append-only for
+  the pipeline role therefore also relies on the application: every ledger write is a
+  `TransactWriteItems` with `attribute_not_exists` conditions on both the event item and
+  its `IDEMP#<event_id>` guard. PITR (35 days) is the recovery path for an overwrite.
+- Detecting MODIFY/REMOVE needs DynamoDB Streams plus a consumer; tracked as a follow-up
+  issue rather than built in Phase 1.

@@ -41,6 +41,9 @@ Module settings that keep the security posture:
   bucket keeps its own policy with `aws:SourceArn` conditions, because the module's
   `attach_cloudtrail_log_delivery_policy` has no source condition and allows writes
   to `AWSLogs/*` for any account.
+- After the PR #1 review (ADR-0004 amendment): workload roles use `path = "/cip/<env>/"`.
+  The data bucket sets `attach_public_policy = false` and relies on account-level S3 Block
+  Public Access, because the deploy roles may not change public access settings.
 - EventBridge: `create_bus = false`, `append_schedule_postfix = false`,
   `group_name = "default"`, so schedules stay `schedule/default/cip-<env>-*`.
 
