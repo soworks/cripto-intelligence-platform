@@ -374,6 +374,7 @@ data "archive_file" "probe" {
 }
 
 data "aws_iam_policy_document" "assume" {
+  provider = aws.use1
   statement {
     actions = ["sts:AssumeRole"]
     principals {
