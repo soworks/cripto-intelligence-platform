@@ -24,3 +24,7 @@ class ExchangeBannedError(MarketDataError):
 
 class ExchangeGeoBlockedError(MarketDataError):
     """Binance returned 451. The configured host is blocking this region."""
+
+
+class HistoryError(CipError):
+    """A market-history dump or continuity file is unusable; callers must fail closed."""
