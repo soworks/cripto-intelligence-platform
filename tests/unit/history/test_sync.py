@@ -394,31 +394,49 @@ def test_fetch_failures_raise_typed_errors(
         _run(tmp_path, server)
 
 
-def test_listed_month_without_a_checksum_file_is_rejected(tmp_path: Path) -> None:
+def test_listed_month_without_a_checksum_is_skipped_and_later_month_syncs(
+    tmp_path: Path,
+) -> None:
     server = Server()
     _recorded_btc_january(server)
     del server.files[f"{monthly_key('BTCUSDT', 2025, 1)}.CHECKSUM"]
+    server.add_monthly("BTCUSDT", 2025, 2, _zip("BTCUSDT", "2025-02", [date(2025, 2, 1)]))
 
-    with pytest.raises(HistoryError, match="checksum"):
-        _run(tmp_path, server)
+    output = _run(tmp_path, server)
+
+    assert monthly_key("BTCUSDT", 2025, 1) not in server.zips()
+    assert monthly_key("BTCUSDT", 2025, 2) in server.zips()
+    assert [bar.open_date for bar in load_bars(output)["BTCUSDT"]] == [date(2025, 2, 1)]
+    assert read_listings(output / "universe" / "listings.parquet")[0].bar_count == 1
 
 
-def test_listed_month_without_a_zip_is_rejected(tmp_path: Path) -> None:
+def test_listed_month_without_a_zip_is_skipped(tmp_path: Path) -> None:
     server = Server()
     _recorded_btc_january(server)
     del server.files[monthly_key("BTCUSDT", 2025, 1)]
 
-    with pytest.raises(HistoryError, match="zip"):
-        _run(tmp_path, server)
+    _run(tmp_path, server)
 
 
-def test_daily_checksum_without_a_zip_is_rejected(tmp_path: Path) -> None:
+def test_daily_checksum_without_a_zip_is_skipped_and_not_stored(tmp_path: Path) -> None:
+    server = Server()
+    server.add_daily("BTCUSDT", date(2026, 9, 4))
+    del server.files[daily_key("BTCUSDT", date(2026, 9, 4))]
+    server.add_daily("BTCUSDT", date(2026, 9, 5))
+
+    output = _run(tmp_path, server)
+
+    assert [bar.open_date for bar in load_bars(output)["BTCUSDT"]] == [date(2026, 9, 5)]
+
+
+def test_daily_checksum_without_any_available_zip_writes_no_month(tmp_path: Path) -> None:
     server = Server()
     server.add_daily("BTCUSDT", date(2026, 9, 4))
     del server.files[daily_key("BTCUSDT", date(2026, 9, 4))]
 
-    with pytest.raises(HistoryError, match="zip"):
-        _run(tmp_path, server)
+    output = _run(tmp_path, server)
+
+    assert not month_path(output, "BTCUSDT", 2026, 9).exists()
 
 
 @pytest.mark.parametrize("symbol", ["BTCUSD", "USDT", "../EVILUSDT", "btcusdt"])
