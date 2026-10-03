@@ -142,3 +142,64 @@ def test_bad_ohlc_volume_precision_and_inner_name_are_rejected() -> None:
     payload, checksum = _zip("BTCUSDT", "2024-01", [_row(open_time)], inner="nope.csv")
     with pytest.raises(HistoryError):
         parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+
+
+def test_unreadable_zip_and_non_utf8_csv_are_rejected() -> None:
+    with pytest.raises(HistoryError):
+        parse_kline_zip(b"not-a-zip", symbol="BTCUSDT", period="2024-01", checksum_text="x")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("BTCUSDT-1d-2024-01.csv", b"\xff\xfe")
+    bad_payload = buffer.getvalue()
+    bad_checksum = f"{hashlib.sha256(bad_payload).hexdigest()}  BTCUSDT-1d-2024-01.zip"
+    with pytest.raises(HistoryError):
+        parse_kline_zip(bad_payload, symbol="BTCUSDT", period="2024-01", checksum_text=bad_checksum)
+
+
+def test_non_hex_checksum_digest_is_rejected() -> None:
+    payload, _ = _zip("BTCUSDT", "2024-01", [_row(1704067200000)])
+    checksum = f"{'g' * 64}  BTCUSDT-1d-2024-01.zip"
+    with pytest.raises(HistoryError):
+        parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+
+
+def test_invalid_integer_fields_are_rejected() -> None:
+    open_time = 1704067200000
+    close_time = open_time + DAY_MS - 1
+    rows = [
+        f",1,1,1,1,1,{close_time},1,1,1,1,0",
+        f"-,1,1,1,1,1,{close_time},1,1,1,1,0",
+        f"{open_time},1,1,1,1,1,{close_time},1,-,1,1,0",
+    ]
+    for line in rows:
+        payload, checksum = _zip("BTCUSDT", "2024-01", [line])
+        with pytest.raises(HistoryError):
+            parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+
+
+def test_invalid_decimal_fields_are_rejected() -> None:
+    open_time = 1704067200000
+    close_time = open_time + DAY_MS - 1
+    for bad in ("not-a-number", "NaN", "Infinity"):
+        row = f"{open_time},{bad},1,1,1,1,{close_time},1,1,1,1,0"
+        payload, checksum = _zip("BTCUSDT", "2024-01", [row])
+        with pytest.raises(HistoryError):
+            parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+
+
+def test_close_at_open_and_at_next_midnight_are_rejected() -> None:
+    open_time = 1704067200000
+    for close_time in (open_time, open_time + DAY_MS):
+        row = f"{open_time},1,1,1,1,1,{close_time},1,1,1,1,0"
+        payload, checksum = _zip("BTCUSDT", "2024-01", [row])
+        with pytest.raises(HistoryError):
+            parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+
+
+def test_partial_day_close_still_parses() -> None:
+    open_time = 1704067200000
+    close_time = open_time + DAY_MS // 2
+    row = f"{open_time},1,1,1,1,1,{close_time},1,1,1,1,0"
+    payload, checksum = _zip("BTCUSDT", "2024-01", [row])
+    bars = parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+    assert bars[0].open_date == date(2024, 1, 1)
