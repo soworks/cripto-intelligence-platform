@@ -125,8 +125,9 @@ def _decimal(text: str) -> Decimal:
     if not value.is_finite():
         raise HistoryError("kline decimal field is invalid")
     exponent = cast(int, value.as_tuple().exponent)
+    digit_count = len(value.as_tuple().digits)
     fraction_digits = -exponent if exponent < 0 else 0
-    integer_digits = len(value.as_tuple().digits) - fraction_digits
+    integer_digits = max(digit_count + exponent, 0)
     if fraction_digits > _MAX_FRACTION_DIGITS or integer_digits > _MAX_INTEGER_DIGITS:
         raise HistoryError("kline decimal field does not fit decimal128(38, 8)")
     return value

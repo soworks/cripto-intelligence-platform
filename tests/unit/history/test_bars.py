@@ -187,6 +187,17 @@ def test_invalid_decimal_fields_are_rejected() -> None:
             parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
 
 
+def test_oversized_decimal128_prices_are_rejected() -> None:
+    open_time = 1704067200000
+    close_time = open_time + DAY_MS - 1
+    too_many_integer_digits = "1" * 31
+    for bad_open in ("1E+40", too_many_integer_digits):
+        row = f"{open_time},{bad_open},1,1,1,1,{close_time},1,1,1,1,0"
+        payload, checksum = _zip("BTCUSDT", "2024-01", [row])
+        with pytest.raises(HistoryError):
+            parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
+
+
 def test_close_at_open_and_at_next_midnight_are_rejected() -> None:
     open_time = 1704067200000
     for close_time in (open_time, open_time + DAY_MS):
