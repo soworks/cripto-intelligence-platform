@@ -2264,14 +2264,16 @@ Expected: five variables listed.
 ```bash
 REPO=soworks/cripto-intelligence-platform
 USER_ID=$(gh api user --jq .id)
-gh api -X PUT repos/$REPO/environments/dev
+gh api -X PUT repos/$REPO/environments/dev --input - <<'EOF'
+{"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}
+EOF
 gh api -X PUT repos/$REPO/environments/prod --input - <<EOF
 {"reviewers":[{"type":"User","id":$USER_ID}],
  "deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}
 EOF
 ```
 
-Expected: JSON responses with `"name":"dev"` and `"name":"prod"`.
+Expected: JSON responses with `"name":"dev"` and `"name":"prod"`. Both environments accept only protected branches (`main`), so the `environment:dev|prod` OIDC subjects cannot be minted from feature branches.
 
 - [ ] **Step 4: Protect `main`**
 
