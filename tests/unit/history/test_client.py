@@ -41,6 +41,22 @@ def _object_page(keys: list[str], *, truncated: bool, marker: str | None) -> str
     )
 
 
+def test_listing_namespace_may_include_a_trailing_slash() -> None:
+    live = "http://s3.amazonaws.com/doc/2006-03-01/"
+    symbols = parse_list_page(
+        _page(["data/spot/monthly/klines/BTCUSDT/"], truncated=False, marker=None).replace(NS, live)
+    )
+    keys = parse_object_page(
+        _object_page(
+            ["data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2017-08.zip"],
+            truncated=False,
+            marker=None,
+        ).replace(NS, live)
+    )
+    assert symbols.symbols == ("BTCUSDT",)
+    assert keys.keys == ("data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2017-08.zip",)
+
+
 def test_urls_are_https() -> None:
     assert CATALOG_URL.startswith("https://")
     assert FILES_URL.startswith("https://")

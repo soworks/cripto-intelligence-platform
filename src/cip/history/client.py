@@ -15,7 +15,6 @@ from cip.domain.errors import ExchangeGeoBlockedError, HistoryError
 CATALOG_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 FILES_URL = "https://data.binance.vision"
 
-_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01"}
 _MONTHLY_PREFIX = "data/spot/monthly/klines"
 
 
@@ -33,7 +32,7 @@ class ObjectPage:
 
 def parse_list_page(xml_text: str) -> ListPage:
     root = _xml_root(xml_text)
-    prefixes = (prefix.text or "" for prefix in root.findall("s3:CommonPrefixes/s3:Prefix", _NS))
+    prefixes = (prefix.text or "" for prefix in _elements(root, "CommonPrefixes/Prefix"))
     symbols = tuple(
         symbol
         for prefix in prefixes
@@ -44,7 +43,7 @@ def parse_list_page(xml_text: str) -> ListPage:
 
 def parse_object_page(xml_text: str) -> ObjectPage:
     root = _xml_root(xml_text)
-    keys = tuple(key.text or "" for key in root.findall("s3:Contents/s3:Key", _NS))
+    keys = tuple(key.text or "" for key in _elements(root, "Contents/Key"))
     return ObjectPage(keys=keys, next_marker=_next_marker(root))
 
 
@@ -196,11 +195,29 @@ def _xml_root(xml_text: str) -> ET.Element:
         raise HistoryError("Binance vision catalog XML is invalid") from error
 
 
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _elements(root: ET.Element, path: str) -> list[ET.Element]:
+    nodes = [root]
+    for part in path.split("/"):
+        nodes = [child for node in nodes for child in node if _local(child.tag) == part]
+    return nodes
+
+
+def _child_text(root: ET.Element, name: str) -> str | None:
+    for child in root:
+        if _local(child.tag) == name:
+            return child.text
+    return None
+
+
 def _next_marker(root: ET.Element) -> str | None:
-    truncated = root.findtext("s3:IsTruncated", default="false", namespaces=_NS) == "true"
-    if not truncated:
+    # The live bucket sends a trailing slash on the S3 namespace. Match the local name.
+    if _child_text(root, "IsTruncated") != "true":
         return None
-    marker = root.findtext("s3:NextMarker", namespaces=_NS)
+    marker = _child_text(root, "NextMarker")
     if marker is None:
         raise HistoryError("truncated Binance vision catalog page has no marker")
     return marker
