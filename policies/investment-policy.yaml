@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 
 universe:
   quote_assets: [USDT]
@@ -18,6 +18,17 @@ discovery:
 portfolio:
   core_assets: [BTCUSDT, ETHUSDT]
   discovery_max_portfolio_pct: 0.10
+  starting_value_usd: 650
+  holdings_are_approximate: true
+  holdings_detail_due: 2026-10-05
+  monthly_contribution_usd: 800
+  contribution_split:
+    core: 0.70
+    discovery: 0.20
+    reserve: 0.10
+  core_mix:
+    BTCUSDT: 0.70
+    ETHUSDT: 0.30
 
 trading:
   spot_only: true
@@ -41,3 +52,24 @@ ai:
 execution:
   mode: SHADOW
   human_approval_required: true
+
+venue:
+  execution_venue: binance.com
+  market_data_base_url: https://data-api.binance.vision
+  maker_fee_rate: 0.00075
+  taker_fee_rate: 0.00075
+
+tax:
+  residency: CO
+  cost_basis_method: FIFO
+
+data:
+  monthly_budget_usd: 0
+
+strategy:
+  bar_interval: 1d
+  bar_close: "00:00:00Z"
+  min_holding_days: 14
+  max_holding_days: 56
+  kill_after_closed_trades: 40
+  kill_after_months: 6

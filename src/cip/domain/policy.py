@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Hashable
 from dataclasses import dataclass
+from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
@@ -33,6 +35,8 @@ def _exact_type(kind: type) -> BeforeValidator:
 
 Fraction = Annotated[float, Field(gt=0, le=1)]
 PositiveUsd = Annotated[float, Field(gt=0)]
+CapitalUsd = Annotated[float, Field(gt=0, le=1_000_000)]
+FeeRate = Annotated[float, Field(gt=0, le=0.01)]
 Symbols = Annotated[tuple[StrictStr, ...], Field(strict=False)]
 AlwaysTrue = Annotated[Literal[True], _exact_type(bool)]
 AlwaysFalse = Annotated[Literal[False], _exact_type(bool)]
@@ -80,9 +84,73 @@ class DiscoveryPolicy(_Strict):
         return self
 
 
+def _cents(amount: float, *fractions: float) -> Decimal:
+    product = Decimal(str(amount))
+    for fraction in fractions:
+        product *= Decimal(str(fraction))
+    return product.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+class ContributionSplit(_Strict):
+    core: Fraction
+    discovery: Fraction
+    reserve: Fraction
+
+    @model_validator(mode="after")
+    def _sums_to_one(self) -> Self:
+        total = self.core + self.discovery + self.reserve
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError("contribution_split must sum to 1")
+        return self
+
+
 class PortfolioPolicy(_Strict):
     core_assets: Symbols
     discovery_max_portfolio_pct: Fraction
+    starting_value_usd: CapitalUsd
+    holdings_are_approximate: bool
+    holdings_detail_due: date | None = None
+    monthly_contribution_usd: CapitalUsd
+    contribution_split: ContributionSplit
+    core_mix: dict[StrictStr, Fraction]
+
+    @model_validator(mode="after")
+    def _holdings_and_mix(self) -> Self:
+        if self.holdings_are_approximate and self.holdings_detail_due is None:
+            raise ValueError("holdings_detail_due is required while holdings are approximate")
+        if set(self.core_mix) != set(self.core_assets):
+            raise ValueError("core_mix keys must match core_assets")
+        if abs(sum(self.core_mix.values()) - 1.0) > 1e-9:
+            raise ValueError("core_mix must sum to 1")
+        return self
+
+    @property
+    def core_monthly_usd(self) -> Decimal:
+        return _cents(self.monthly_contribution_usd, self.contribution_split.core)
+
+    @property
+    def discovery_monthly_usd(self) -> Decimal:
+        return _cents(self.monthly_contribution_usd, self.contribution_split.discovery)
+
+    @property
+    def reserve_monthly_usd(self) -> Decimal:
+        return _cents(self.monthly_contribution_usd, self.contribution_split.reserve)
+
+    @property
+    def core_btc_monthly_usd(self) -> Decimal:
+        return _cents(
+            self.monthly_contribution_usd,
+            self.contribution_split.core,
+            self.core_mix["BTCUSDT"],
+        )
+
+    @property
+    def core_eth_monthly_usd(self) -> Decimal:
+        return _cents(
+            self.monthly_contribution_usd,
+            self.contribution_split.core,
+            self.core_mix["ETHUSDT"],
+        )
 
 
 class TradingPolicy(_Strict):
@@ -124,8 +192,39 @@ class ExecutionPolicy(_Strict):
     human_approval_required: AlwaysTrue
 
 
+class VenuePolicy(_Strict):
+    execution_venue: Literal["binance.com"]
+    market_data_base_url: Literal["https://data-api.binance.vision"]
+    maker_fee_rate: FeeRate
+    taker_fee_rate: FeeRate
+
+
+class TaxPolicy(_Strict):
+    residency: Literal["CO"]
+    cost_basis_method: Literal["FIFO"]
+
+
+class DataPolicy(_Strict):
+    monthly_budget_usd: Annotated[Literal[0], _exact_type(int)]
+
+
+class StrategyPolicy(_Strict):
+    bar_interval: Literal["1d"]
+    bar_close: Literal["00:00:00Z"]
+    min_holding_days: int = Field(ge=1)
+    max_holding_days: int = Field(ge=1, le=3650)
+    kill_after_closed_trades: int = Field(ge=1, le=100_000)
+    kill_after_months: int = Field(ge=1, le=120)
+
+    @model_validator(mode="after")
+    def _holding_window(self) -> Self:
+        if self.max_holding_days < self.min_holding_days:
+            raise ValueError("max_holding_days must be >= min_holding_days")
+        return self
+
+
 class InvestmentPolicy(_Strict):
-    schema_version: Annotated[Literal[1], _exact_type(int)]
+    schema_version: Annotated[Literal[2], _exact_type(int)]
     universe: UniversePolicy
     discovery: DiscoveryPolicy
     portfolio: PortfolioPolicy
@@ -133,6 +232,10 @@ class InvestmentPolicy(_Strict):
     risk: RiskPolicy
     ai: AiPolicy
     execution: ExecutionPolicy
+    venue: VenuePolicy
+    tax: TaxPolicy
+    data: DataPolicy
+    strategy: StrategyPolicy
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
