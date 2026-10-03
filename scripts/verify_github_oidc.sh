@@ -132,6 +132,13 @@ check denied  cip-gha-plan secretsmanager:GetSecretValue \
 check denied  cip-gha-plan s3:GetBucketPolicy "$TRAIL" "$OWN"
 check allowed cip-gha-plan s3:GetBucketPolicy "$DATA" "$OWN"
 check denied  cip-gha-plan s3:GetBucketPolicy "$FOREIGN_BUCKET" "$FOREIGN"
+check allowed cip-gha-plan s3:ListBucket "$DATA" "$OWN"
+check denied  cip-gha-plan s3:ListBucket "$TRAIL" "$OWN"
+check denied  cip-gha-plan s3:GetObject "${DATA}/snapshots/x" "$OWN"
+check allowed cip-gha-plan states:ListStateMachineVersions \
+  "arn:aws:states:us-east-1:${ACCOUNT_ID}:stateMachine:cip-dev-scan-pipeline"
+check denied  cip-gha-plan states:ListStateMachineVersions \
+  "arn:aws:states:us-east-1:${ACCOUNT_ID}:stateMachine:cip-prod-scan-pipeline"
 check allowed cip-gha-plan events:DescribeEventBus "${BUS}/default"
 check denied  cip-gha-plan events:DescribeEventBus "${BUS}/other"
 check denied  cip-gha-plan events:PutEvents "${BUS}/default"

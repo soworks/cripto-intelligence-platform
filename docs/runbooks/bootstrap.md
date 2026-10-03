@@ -94,6 +94,17 @@ cannot match it. The action only validates JSON and changes nothing. The IAM sim
 cannot evaluate it, so `verify_github_oidc.sh` does not check it; the first dev deploy
 (run 37149792669, attempt 2) proved it.
 
+Refreshing existing dev resources needs two reads beyond an empty-environment plan, and the
+plan role has both on `cip-dev-*` only:
+- `s3:ListBucket`, which `HeadBucket` requires. Without it the provider treats the 403 as a
+  deleted bucket and plans to recreate its configuration. Object reads stay denied.
+- `states:ListStateMachineVersions`.
+
+The deploy roles already have these through `s3:*` and `states:*` on `cip-<env>-*`. To
+reproduce a plan under a CI policy against live resources, use a temporary role that only
+`user/asolano` can assume, with the rendered policy inline. Federation tokens cannot call
+IAM, so they only work for plans of an empty environment.
+
 The OIDC roles stay on this script. The iam module's `iam-oidc-provider` and GitHub OIDC
 `iam-role` submodules are a possible future replacement (ADR-0008); we are not switching now.
 

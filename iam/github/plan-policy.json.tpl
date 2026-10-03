@@ -34,6 +34,7 @@
         "lambda:ListVersionsByFunction",
         "lambda:ListTags",
         "states:DescribeStateMachine",
+        "states:ListStateMachineVersions",
         "states:ListTagsForResource",
         "scheduler:GetSchedule",
         "sns:GetTopicAttributes",
@@ -74,6 +75,7 @@
       "Effect": "Allow",
       "Action": [
         "s3:GetBucket*",
+        "s3:ListBucket",
         "s3:GetAccelerateConfiguration",
         "s3:GetEncryptionConfiguration",
         "s3:GetLifecycleConfiguration",
