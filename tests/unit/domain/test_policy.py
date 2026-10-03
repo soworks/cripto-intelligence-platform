@@ -61,6 +61,12 @@ def test_repository_policy_records_owner_decisions() -> None:
     assert policy.strategy.bar_close == "00:00:00Z"
     assert (policy.strategy.min_holding_days, policy.strategy.max_holding_days) == (14, 56)
     assert (policy.strategy.kill_after_closed_trades, policy.strategy.kill_after_months) == (40, 6)
+    assert policy.portfolio.discovery_max_portfolio_pct == 0.10
+    assert (
+        policy.risk.max_trade_usd,
+        policy.risk.max_daily_trade_usd,
+        policy.risk.max_monthly_trade_usd,
+    ) == (75, 150, 750)
 
 
 def test_version_is_sha256_of_file_bytes() -> None:
@@ -235,6 +241,29 @@ def test_exact_holdings_may_omit_the_due_date(tmp_path: Path, policy_data: dict[
     assert loaded.policy.portfolio.holdings_detail_due is None
 
 
+def test_core_mix_with_a_renamed_symbol_is_rejected(
+    tmp_path: Path, policy_data: dict[str, Any]
+) -> None:
+    policy_data["portfolio"]["core_mix"] = {"BTCUSDT": 0.70, "SOLUSDT": 0.30}
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))
+
+
+def test_renamed_core_assets_are_rejected(tmp_path: Path, policy_data: dict[str, Any]) -> None:
+    policy_data["portfolio"]["core_assets"] = ["BTCUSDT", "SOLUSDT"]
+    policy_data["portfolio"]["core_mix"] = {"BTCUSDT": 0.70, "SOLUSDT": 0.30}
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))
+
+
+def test_core_mix_item_assignment_is_rejected() -> None:
+    portfolio = load_policy(REPO_POLICY).policy.portfolio
+    with pytest.raises(TypeError):
+        portfolio.core_mix["BTCUSDT"] = 0.99
+    assert portfolio.core_btc_monthly_usd == Decimal("392.00")
+    assert portfolio.core_eth_monthly_usd == Decimal("168.00")
+
+
 def test_exact_holdings_may_keep_the_due_date(tmp_path: Path, policy_data: dict[str, Any]) -> None:
     policy_data["portfolio"]["holdings_are_approximate"] = False
     loaded = load_policy(_write(tmp_path, policy_data))
@@ -251,7 +280,6 @@ def test_exact_holdings_may_keep_the_due_date(tmp_path: Path, policy_data: dict[
         (("portfolio", "holdings_detail_due"), None),
         (("portfolio", "contribution_split", "core"), 0.50),
         (("portfolio", "contribution_split", "bonus"), 0.10),
-        (("portfolio", "core_mix", "SOLUSDT"), 0.30),
         (("portfolio", "core_mix", "ETHUSDT"), 0.20),
         (("venue", "execution_venue"), "binance.us"),
         (("venue", "market_data_base_url"), "https://api.binance.com"),

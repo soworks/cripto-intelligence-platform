@@ -11,7 +11,8 @@ and the data budget were still unrecorded, so later simulations could invent the
 ## Decision
 - The execution venue is Binance.com. Binance.US is not used.
 - The owner is a Colombian tax resident. When fill records exist, lots use FIFO.
-  This decision does not choose between *ganancia ocasional* and ordinary income.
+  This is not tax advice, and it does not choose between *ganancia ocasional* and
+  ordinary income.
 - Simulations use a maker fee of 0.00075 and a taker fee of 0.00075, Binance spot
   VIP 0 with fees paid in BNB.
 - Market data is read from `https://data-api.binance.vision`.
