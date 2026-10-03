@@ -29,11 +29,15 @@ Creates:
 `iam/github/`. Each run:
 - creates the `token.actions.githubusercontent.com` provider if missing (audience `sts.amazonaws.com`);
 - creates or updates `cip-gha-plan`, `cip-gha-dev`, `cip-gha-prod` (max session 3600 s);
-- rewrites each trust policy: `aud = sts.amazonaws.com`, exact `sub`
-  (`repo:soworks/cripto-intelligence-platform:pull_request` / `:environment:dev` /
-  `:environment:prod`), and `repository_id` + `repository_owner_id` when `gh` is
-  authenticated (or `GITHUB_REPOSITORY_ID` / `GITHUB_REPOSITORY_OWNER_ID` are set).
-  Without them it prints a WARNING; rerun once `gh` is logged in;
+- rewrites each trust policy: `aud = sts.amazonaws.com`, exact `sub`, and
+  `repository_id` + `repository_owner_id`. The repository uses GitHub immutable subjects,
+  so `sub` = `repo:soworks@146444006/cripto-intelligence-platform@1403465152:` +
+  `pull_request` / `environment:dev` / `environment:prod`. The prefix and IDs are read with
+  `gh api` (`actions/oidc/customization/sub` -> `sub_claim_prefix`, and `repos/{repo}`), or
+  from `GITHUB_SUB_PREFIX` / `GITHUB_REPOSITORY_ID` / `GITHUB_REPOSITORY_OWNER_ID`.
+  Without them it prints WARNINGs and falls back to the legacy `repo:OWNER/REPO` prefix,
+  which will not match this repository; rerun once `gh` is logged in. A custom
+  (non-default) sub claim template makes the script exit with an error;
 - detaches every managed policy, deletes unexpected inline policies, and puts the
   single expected inline policy (`cip-gha-plan-read`, `cip-dev-deploy`, `cip-prod-deploy`);
 - prints `AWS_ROLE_PLAN|DEV|PROD=<arn>` for the GitHub repository variables.

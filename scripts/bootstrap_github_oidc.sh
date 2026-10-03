@@ -4,8 +4,8 @@
 #
 # Usage: scripts/bootstrap_github_oidc.sh [--profile soworks] [--region us-east-1]
 #                                         [--account 258485600712] [--dry-run]
-# Repository ID pinning uses `gh api` when gh is authenticated, or the
-# GITHUB_REPOSITORY_ID / GITHUB_REPOSITORY_OWNER_ID environment variables.
+# Repository ID pinning and the OIDC sub prefix come from `gh api` when gh is authenticated,
+# or from GITHUB_REPOSITORY_ID / GITHUB_REPOSITORY_OWNER_ID / GITHUB_SUB_PREFIX.
 set -euo pipefail
 
 PROFILE="soworks"
@@ -44,8 +44,20 @@ PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${PROVIDER_HOST}"
 
 REPO_ID="${GITHUB_REPOSITORY_ID:-}"
 OWNER_ID="${GITHUB_REPOSITORY_OWNER_ID:-}"
-if [[ -z "$REPO_ID" || -z "$OWNER_ID" ]] && command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-  read -r REPO_ID OWNER_ID < <(gh api "repos/$REPO" --jq '"\(.id) \(.owner.id)"')
+SUB_PREFIX="${GITHUB_SUB_PREFIX:-}"
+if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+  if [[ -z "$REPO_ID" || -z "$OWNER_ID" ]]; then
+    read -r REPO_ID OWNER_ID < <(gh api "repos/$REPO" --jq '"\(.id) \(.owner.id)"')
+  fi
+  if [[ -z "$SUB_PREFIX" ]]; then
+    # Repositories with immutable subjects get sub = repo:OWNER@OWNER_ID/REPO@REPO_ID:<context>.
+    customization="$(gh api "repos/$REPO/actions/oidc/customization/sub")"
+    if [[ "$(jq -r .use_default <<<"$customization")" != "true" ]]; then
+      echo "custom OIDC sub claim template on $REPO is not supported: $customization" >&2
+      exit 1
+    fi
+    SUB_PREFIX="$(jq -r '.sub_claim_prefix // empty' <<<"$customization")"
+  fi
 fi
 if [[ -n "$REPO_ID" && ! "$REPO_ID" =~ ^[0-9]+$ ]] || [[ -n "$OWNER_ID" && ! "$OWNER_ID" =~ ^[0-9]+$ ]]; then
   echo "repository_id/repository_owner_id must be numeric (got '$REPO_ID'/'$OWNER_ID')" >&2
@@ -55,6 +67,11 @@ if [[ -z "$REPO_ID" || -z "$OWNER_ID" ]]; then
   REPO_ID="" OWNER_ID=""
   log "WARNING: repository_id pinning NOT applied (gh not authenticated and IDs not provided)."
   log "WARNING: run 'gh auth login' and rerun this script to pin $REPO by immutable ID."
+fi
+if [[ -z "$SUB_PREFIX" ]]; then
+  SUB_PREFIX="repo:${REPO}"
+  log "WARNING: sub prefix not read from GitHub; assuming legacy '$SUB_PREFIX'."
+  log "WARNING: repositories with immutable subjects will NOT match; rerun with gh authenticated."
 fi
 
 render() {
@@ -66,7 +83,7 @@ render() {
 trust_policy() {
   jq -nc \
     --arg provider "$PROVIDER_ARN" --arg host "$PROVIDER_HOST" --arg aud "$AUDIENCE" \
-    --arg sub "repo:${REPO}:$1" --arg repo_id "$REPO_ID" --arg owner_id "$OWNER_ID" '
+    --arg sub "${SUB_PREFIX}:$1" --arg repo_id "$REPO_ID" --arg owner_id "$OWNER_ID" '
     {
       Version: "2012-10-17",
       Statement: [{

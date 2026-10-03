@@ -17,10 +17,12 @@ By owner choice, the GitHub OIDC provider and the three `cip-gha-*` roles are ma
 `scripts/bootstrap_github_oidc.sh` (AWS CLI, policies in `iam/github/`), not Terraform.
 Terraform bootstrap keeps the state bucket, boundaries, budget and CloudTrail. Role ARNs
 are GitHub repository variables (not secrets; an ARN is not a credential).
-- Trust: `StringEquals` on `aud = sts.amazonaws.com` and an exact `sub` per role
-  (`repo:soworks/cripto-intelligence-platform:pull_request`, `:environment:dev`,
-  `:environment:prod`), plus `repository_id` and `repository_owner_id` once the script is
-  run with `gh` authenticated, so a re-created repository with the same name cannot assume them.
+- Trust: `StringEquals` on `aud = sts.amazonaws.com`, an exact `sub` per role, and
+  `repository_id = 1403465152` + `repository_owner_id = 146444006`, so a re-created
+  repository with the same name cannot assume them. The repository uses GitHub immutable
+  subjects, so `sub` is `repo:soworks@146444006/cripto-intelligence-platform@1403465152:`
+  followed by `pull_request`, `environment:dev` or `environment:prod`; the script reads
+  this prefix from `GET /repos/{repo}/actions/oidc/customization/sub` (`sub_claim_prefix`).
 - `cip-gha-plan` has no AWS managed policy. Its inline `cip-gha-plan-read` policy allows
   only Describe/Get/List on `cip-dev-*` / `cip-prod-*` resources and `/cip/*` parameters,
   `s3:GetObject`/`ListBucket` on the state bucket's `env/dev/` and `env/prod/` prefixes

@@ -2015,11 +2015,14 @@ versioned script instead of Terraform (see ADR-0004 amendment). Files:
 - `scripts/bootstrap_github_oidc.sh` - creates the provider if missing; creates or updates
   each role (trust policy, max session 3600, tags), detaches all managed policies, deletes
   unexpected inline policies, and puts the expected one. Trust conditions (`StringEquals`):
-  `aud = sts.amazonaws.com`; exact `sub` = `repo:soworks/cripto-intelligence-platform:pull_request`,
-  `:environment:dev`, `:environment:prod`; plus `repository_id` and `repository_owner_id`
-  from `gh api repos/soworks/cripto-intelligence-platform` when `gh` is authenticated
-  (otherwise it prints a WARNING and pinning is a follow-up rerun). `--dry-run` prints the
-  rendered documents.
+  `aud = sts.amazonaws.com`; `repository_id` and `repository_owner_id` from
+  `gh api repos/soworks/cripto-intelligence-platform`; and an exact `sub` built from the
+  repository's `sub_claim_prefix` (`gh api repos/{repo}/actions/oidc/customization/sub`).
+  This repository uses GitHub immutable subjects, so the subs are
+  `repo:soworks@146444006/cripto-intelligence-platform@1403465152:pull_request`,
+  `...:environment:dev` and `...:environment:prod` (the legacy `repo:OWNER/REPO:...` form
+  would never match). Without `gh` the script prints WARNINGs and needs a rerun.
+  `--dry-run` prints the rendered documents.
 - `scripts/verify_github_oidc.sh` - `iam:SimulatePrincipalPolicy` spot checks with expected
   decisions; exits non-zero on mismatch.
 
