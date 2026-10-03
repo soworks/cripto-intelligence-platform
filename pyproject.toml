@@ -24,6 +24,9 @@ dev = [
   "ruff>=0.12",
   "types-PyYAML>=6.0",
 ]
+history = [
+    "pyarrow>=18",
+]
 
 [build-system]
 requires = ["hatchling"]
