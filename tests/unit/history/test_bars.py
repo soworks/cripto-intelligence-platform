@@ -145,8 +145,15 @@ def test_bad_ohlc_volume_precision_and_inner_name_are_rejected() -> None:
 
 
 def test_unreadable_zip_and_non_utf8_csv_are_rejected() -> None:
+    garbage = b"not-a-zip"
+    garbage_checksum = f"{hashlib.sha256(garbage).hexdigest()}  BTCUSDT-1d-2024-01.zip"
     with pytest.raises(HistoryError):
-        parse_kline_zip(b"not-a-zip", symbol="BTCUSDT", period="2024-01", checksum_text="x")
+        parse_kline_zip(
+            garbage,
+            symbol="BTCUSDT",
+            period="2024-01",
+            checksum_text=garbage_checksum,
+        )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("BTCUSDT-1d-2024-01.csv", b"\xff\xfe")
@@ -214,6 +221,19 @@ def test_partial_day_close_still_parses() -> None:
     payload, checksum = _zip("BTCUSDT", "2024-01", [row])
     bars = parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
     assert bars[0].open_date == date(2024, 1, 1)
+
+
+def test_out_of_range_open_time_is_rejected() -> None:
+    open_time = 10**30 * DAY_US
+    payload, checksum = _zip("BTCUSDT", "2024-01", [_row(open_time, unit="us")])
+
+    with pytest.raises(HistoryError, match="timestamp"):
+        parse_kline_zip(
+            payload,
+            symbol="BTCUSDT",
+            period="2024-01",
+            checksum_text=checksum,
+        )
 
 
 def test_verified_sha256_returns_the_digest_of_a_matching_payload() -> None:
