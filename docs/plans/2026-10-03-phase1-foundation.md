@@ -60,12 +60,8 @@ cripto-intelligence-platform/
 │   └── persistence/{__init__,ledger}.py    # append-only ledger repository
 ├── terraform/
 │   ├── bootstrap/                  # state bucket, boundaries, budgets, CloudTrail (OIDC roles: scripts/bootstrap_github_oidc.sh)
-│   ├── modules/                    # each module has its own versions.tf
-│   │   ├── alerts/
-│   │   ├── platform-data/          # S3 data bucket, ledger/state/counters tables
-│   │   ├── runtime-flags/          # SSM execution flags
-│   │   └── scan-pipeline/          # Lambdas, Step Functions, scheduler, alarms
-│   └── environments/dev/
+│   ├── definitions/scan-pipeline.asl.json
+│   └── environments/dev/           # registry modules only (ADR-0008): data, flags, alerts, pipeline
 └── tests/
     ├── unit/
     │   ├── conftest.py             # fake AWS creds + moto tables
@@ -1795,6 +1791,8 @@ git commit -m "build: add deterministic arm64 lambda artifact script"
 
 Creates the Terraform state bucket, per-env workload permission boundaries, a monthly budget, and a CloudTrail trail with Terraform; then the GitHub OIDC provider and CI roles with an AWS CLI script (owner choice, ADR-0004).
 
+> **Amended by ADR-0008.** The CloudTrail bucket is now `module.cloudtrail_bucket` (terraform-aws-modules/s3-bucket 5.16.1). `moved {}` blocks carried the live resources over with 0 destroys; the only change applied was an added TLS-deny statement on the bucket policy. The state bucket, boundaries, budget and trail stay plain resources (see ADR-0008 for why).
+
 **Files:**
 - Create: `terraform/bootstrap/versions.tf`, `terraform/bootstrap/variables.tf`, `terraform/bootstrap/state.tf`, `terraform/bootstrap/boundaries.tf`, `terraform/bootstrap/budget.tf`, `terraform/bootstrap/cloudtrail.tf`, `terraform/bootstrap/outputs.tf`, `terraform/bootstrap/terraform.tfvars`, `terraform/bootstrap/backend.tf`, `iam/github/plan-policy.json.tpl`, `iam/github/deploy-policy.json.tpl`, `scripts/bootstrap_github_oidc.sh`, `scripts/verify_github_oidc.sh`, `docs/runbooks/bootstrap.md`
 
@@ -2293,6 +2291,14 @@ Expected: JSON with `"required_status_checks"`. If the API returns `403 Upgrade 
 ---
 
 ### Task 11: Terraform dev environment
+
+> **Amended by ADR-0008 (terraform-aws-modules).** The local modules shown in the steps below were replaced by registry modules called directly from `terraform/environments/dev`:
+> - `data.tf`: s3-bucket 5.16.1 for the data bucket (now also TLS-only) and dynamodb-table 5.5.2 for the ledger, state and counters tables.
+> - `flags.tf`: ssm-parameter 2.1.2, with `ignore_value_changes` on `kill_switch`.
+> - `alerts.tf`: sns 7.2.0 plus two cloudwatch `metric-alarm` 5.7.3 alarms.
+> - `pipeline.tf`: three iam `iam-role` 6.8.2 roles with the boundary, lambda 8.9.0 (`create_package = false`, `local_existing_package`, `create_role = false`), step-functions 5.1.1 (`use_existing_role = true`) and eventbridge 4.3.2 (schedules only).
+>
+> The ASL template moved to `terraform/definitions/scan-pipeline.asl.json`. Resource names, the boundary, IAM statements and fail-closed flag values are unchanged. The dev plan is 34 to add: the earlier 30, plus the data bucket TLS policy and three `terraform_data` package trackers from the lambda module. The steps below are kept as the original design record; the code in `terraform/environments/dev` is authoritative.
 
 **Files:**
 - Create: `terraform/modules/platform-data/{versions,main,variables,outputs}.tf`, `terraform/modules/runtime-flags/{versions,main,variables,outputs}.tf`, `terraform/modules/alerts/{versions,main,variables,outputs}.tf`, `terraform/modules/scan-pipeline/{versions,main,variables,outputs}.tf`, `terraform/modules/scan-pipeline/scan-pipeline.asl.json`, `terraform/environments/dev/{main,variables,outputs}.tf`, `terraform/environments/dev/terraform.tfvars`

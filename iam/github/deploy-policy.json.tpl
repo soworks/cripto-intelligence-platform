@@ -53,6 +53,12 @@
       "Sid": "ReadForPlanning"
     },
     {
+      "Action": "events:DescribeEventBus",
+      "Effect": "Allow",
+      "Resource": "arn:aws:events:${REGION}:${ACCOUNT_ID}:event-bus/default",
+      "Sid": "ReadDefaultEventBus"
+    },
+    {
       "Action": [
         "logs:UpdateLogDelivery",
         "logs:PutResourcePolicy",
