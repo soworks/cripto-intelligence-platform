@@ -1,0 +1,23 @@
+framework:
+  - terraform
+skip-check:
+  - CKV_AWS_117   # Lambda outside VPC by design: public exchange APIs, no NAT cost (ADR-0003)
+  - CKV_AWS_116   # Lambda DLQ: Step Functions catches and records failures (ADR-0006)
+  - CKV_AWS_173   # Lambda env var CMK: env vars hold no secrets
+  - CKV_AWS_272   # Lambda code signing: deferred until prod executor (M6)
+  - CKV_AWS_115   # Reserved concurrency: deferred per reference doc 8.1
+  - CKV_AWS_158   # Log group CMK: AWS-managed encryption is sufficient for v1
+  - CKV_AWS_338   # 1-year log retention: cost; 14d dev / 90d prod
+  - CKV_AWS_119   # DynamoDB CMK: AWS-owned key sufficient for v1
+  - CKV_AWS_144   # S3 cross-region replication: not required for v1
+  - CKV_AWS_145   # S3 CMK: SSE-S3 sufficient for v1
+  - CKV_AWS_18    # S3 access logging: CloudTrail covers management events
+  - CKV2_AWS_62   # S3 event notifications: not used
+  - CKV_AWS_26    # SNS CMK: alert payloads contain no secrets
+  - CKV_AWS_337   # SSM CMK: execution flags are non-secret
+  - CKV2_AWS_34   # SSM SecureString: execution flags are non-secret String parameters
+  - CKV_AWS_297   # Scheduler CMK: schedule input is a non-secret trigger payload
+  - CKV_AWS_284   # State machine X-Ray: Lambdas trace; SFN tracing needs xray sampling perms (Phase 2)
+  - CKV_AWS_35    # CloudTrail CMK: SSE-S3 sufficient for v1
+  - CKV_AWS_252   # CloudTrail SNS: not required
+  - CKV2_AWS_10   # CloudTrail to CloudWatch Logs: cost; S3 retention used

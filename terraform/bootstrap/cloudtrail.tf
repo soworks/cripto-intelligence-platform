@@ -6,6 +6,7 @@ locals {
 resource "aws_s3_bucket" "cloudtrail" {
   #checkov:skip=CKV_AWS_21:CloudTrail log file validation provides integrity; versioning adds cost only
   #checkov:skip=CKV2_AWS_61:Lifecycle is defined in aws_s3_bucket_lifecycle_configuration.cloudtrail
+  #checkov:skip=CKV2_AWS_6:Public access block is aws_s3_bucket_public_access_block.cloudtrail (count-indexed)
   count  = var.create_cloudtrail ? 1 : 0
   bucket = "cip-cloudtrail-${local.account_id}"
 }
@@ -28,6 +29,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
     filter {}
     expiration {
       days = 365
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
