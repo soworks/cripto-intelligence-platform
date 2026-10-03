@@ -127,7 +127,7 @@ Fail closed, same as today: a missing file, duplicate YAML key, unknown field, o
 - `starting_value_usd` and `monthly_contribution_usd` are greater than 0 and at most 1_000_000.
 - `maker_fee_rate` and `taker_fee_rate` are greater than 0 and at most 0.01.
 - `contribution_split` has exactly the keys `core`, `discovery`, and `reserve`. Each value is in `(0, 1]`. The three values sum to 1 within an absolute tolerance of `1e-9`.
-- `core_mix` has the same keys as `portfolio.core_assets`, compared as a set. Each value is in `(0, 1]`. The values sum to 1 within `1e-9`.
+- `core_assets` is exactly `{BTCUSDT, ETHUSDT}`. `core_mix` has those same keys, compared as a set. Each value is in `(0, 1]`. The values sum to 1 within `1e-9`. After load, `core_mix` is immutable: item assignment raises `TypeError`.
 - `holdings_detail_due` is required while `holdings_are_approximate` is true. It may be omitted when `holdings_are_approximate` is false.
 - `min_holding_days` is at least 1. `max_holding_days` is greater than or equal to `min_holding_days` and at most 3650.
 - `kill_after_closed_trades` is at least 1 and at most 100_000. `kill_after_months` is at least 1 and at most 120.

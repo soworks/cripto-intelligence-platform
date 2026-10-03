@@ -7,6 +7,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Any, Literal, Self
 
 import yaml
@@ -118,10 +119,13 @@ class PortfolioPolicy(_Strict):
     def _holdings_and_mix(self) -> Self:
         if self.holdings_are_approximate and self.holdings_detail_due is None:
             raise ValueError("holdings_detail_due is required while holdings are approximate")
+        if set(self.core_assets) != {"BTCUSDT", "ETHUSDT"}:
+            raise ValueError("core_assets must be BTCUSDT and ETHUSDT")
         if set(self.core_mix) != set(self.core_assets):
             raise ValueError("core_mix keys must match core_assets")
         if abs(sum(self.core_mix.values()) - 1.0) > 1e-9:
             raise ValueError("core_mix must sum to 1")
+        object.__setattr__(self, "core_mix", MappingProxyType(dict(self.core_mix)))
         return self
 
     @property
