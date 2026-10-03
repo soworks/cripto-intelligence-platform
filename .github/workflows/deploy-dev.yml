@@ -48,6 +48,7 @@ jobs:
       ledger_table_name: ${{ steps.outputs.outputs.ledger_table_name }}
       ledger_table_arn: ${{ steps.outputs.outputs.ledger_table_arn }}
       pipeline_role_arn: ${{ steps.outputs.outputs.pipeline_role_arn }}
+      market_probe_function_name: ${{ steps.outputs.outputs.market_probe_function_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,6 +79,7 @@ jobs:
             echo "ledger_table_name=$(terraform output -raw ledger_table_name)"
             echo "ledger_table_arn=$(terraform output -raw ledger_table_arn)"
             echo "pipeline_role_arn=$(terraform output -raw pipeline_lambda_role_arn)"
+            echo "market_probe_function_name=$(terraform output -raw market_probe_function_name)"
           } >> "$GITHUB_OUTPUT"
 
   integration:
@@ -106,4 +108,5 @@ jobs:
           CIP_LEDGER_TABLE: ${{ needs.deploy.outputs.ledger_table_name }}
           CIP_LEDGER_TABLE_ARN: ${{ needs.deploy.outputs.ledger_table_arn }}
           CIP_PIPELINE_ROLE_ARN: ${{ needs.deploy.outputs.pipeline_role_arn }}
+          CIP_MARKET_PROBE_FUNCTION: ${{ needs.deploy.outputs.market_probe_function_name }}
         run: uv run pytest -m integration tests/integration -v

@@ -13,3 +13,7 @@ output "ledger_table_arn" {
 output "pipeline_lambda_role_arn" {
   value = module.pipeline_lambda_role.arn
 }
+
+output "market_probe_function_name" {
+  value = module.market_probe_lambda.lambda_function_name
+}
