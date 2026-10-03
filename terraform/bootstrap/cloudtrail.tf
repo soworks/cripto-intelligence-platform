@@ -43,10 +43,33 @@ data "aws_iam_policy_document" "cloudtrail_bucket" {
       values   = [local.trail_arn]
     }
   }
+
+  statement {
+    sid    = "DenyTamperingExceptAdmins"
+    effect = "Deny"
+    actions = [
+      "s3:DeleteObject*", "s3:BypassGovernanceRetention", "s3:PutObjectRetention",
+      "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:PutBucketVersioning",
+      "s3:PutBucketObjectLockConfiguration", "s3:PutLifecycleConfiguration",
+    ]
+    resources = [
+      "arn:aws:s3:::${local.cloudtrail_bucket}",
+      "arn:aws:s3:::${local.cloudtrail_bucket}/*",
+    ]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = local.admin_principal_arns
+    }
+  }
 }
 
 module "cloudtrail_bucket" {
-  #checkov:skip=CKV_AWS_21:CloudTrail log file validation provides integrity; versioning adds cost only
+  #checkov:skip=CKV_AWS_21:Versioning is enabled through the module's versioning input (separate module resource)
   #checkov:skip=CKV2_AWS_61:Lifecycle is set through the module's lifecycle_rule (dynamic block)
   #checkov:skip=CKV2_AWS_6:Public access block is created by the module (all four flags default to true)
   #checkov:skip=CKV_AWS_300:abort_incomplete_multipart_upload_days is set in lifecycle_rule (dynamic block)
@@ -60,10 +83,18 @@ module "cloudtrail_bucket" {
   policy                                = try(data.aws_iam_policy_document.cloudtrail_bucket[0].json, null)
   attach_deny_insecure_transport_policy = true
 
+  versioning = { enabled = true }
+
+  object_lock_enabled = true
+  object_lock_configuration = {
+    rule = { default_retention = { mode = "GOVERNANCE", days = 90 } }
+  }
+
   lifecycle_rule = [{
     id                                     = "expire-after-1-year"
     enabled                                = true
     expiration                             = { days = 365 }
+    noncurrent_version_expiration          = { noncurrent_days = 30 }
     abort_incomplete_multipart_upload_days = 7
   }]
 }
