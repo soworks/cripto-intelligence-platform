@@ -8,6 +8,8 @@ data "aws_iam_policy_document" "workload_boundary" {
   #checkov:skip=CKV_AWS_288:Permission boundary is a ceiling; grants are scoped in role policies
   #checkov:skip=CKV_AWS_289:Permission boundary is a ceiling; grants are scoped in role policies
   #checkov:skip=CKV_AWS_290:Permission boundary is a ceiling; grants are scoped in role policies
+  #checkov:skip=CKV_AWS_109:Permission boundary is a ceiling; grants are scoped in role policies
+  #checkov:skip=CKV_AWS_111:Permission boundary is a ceiling; grants are scoped in role policies
   for_each = local.environments
 
   statement {
