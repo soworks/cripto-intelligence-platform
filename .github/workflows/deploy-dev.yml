@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 defaults:
   run:
@@ -17,23 +16,50 @@ concurrency:
   group: deploy-dev
   cancel-in-progress: false
 
+# The Lambda build runs without id-token. The deploy and integration jobs use the dev
+# environment; their tooling is pinned (Terraform 1.16.5, uv 0.12.23 with uv.lock).
 jobs:
-  deploy:
+  lambda-artifact:
     runs-on: ubuntu-24.04
-    environment: dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          enable-cache: true
+          version: "0.12.23"
+      - run: ./scripts/build_lambda.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cip-lambda
+          path: build/cip-lambda.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: lambda-artifact
+    runs-on: ubuntu-24.04
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      state_machine_arn: ${{ steps.outputs.outputs.state_machine_arn }}
+      ledger_table_name: ${{ steps.outputs.outputs.ledger_table_name }}
+      ledger_table_arn: ${{ steps.outputs.outputs.ledger_table_arn }}
+      pipeline_role_arn: ${{ steps.outputs.outputs.pipeline_role_arn }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.16.5
           terraform_wrapper: false
-      - run: uv sync --all-groups --frozen
-      - run: ./scripts/build_lambda.sh
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cip-lambda
+          path: build
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_DEV }}
@@ -44,11 +70,40 @@ jobs:
         run: |
           terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
           terraform apply -input=false -auto-approve
+      - id: outputs
+        working-directory: terraform/environments/dev
+        run: |
           {
-            echo "CIP_STATE_MACHINE_ARN=$(terraform output -raw state_machine_arn)"
-            echo "CIP_LEDGER_TABLE=$(terraform output -raw ledger_table_name)"
-            echo "CIP_LEDGER_TABLE_ARN=$(terraform output -raw ledger_table_arn)"
-            echo "CIP_PIPELINE_ROLE_ARN=$(terraform output -raw pipeline_lambda_role_arn)"
-          } >> "$GITHUB_ENV"
+            echo "state_machine_arn=$(terraform output -raw state_machine_arn)"
+            echo "ledger_table_name=$(terraform output -raw ledger_table_name)"
+            echo "ledger_table_arn=$(terraform output -raw ledger_table_arn)"
+            echo "pipeline_role_arn=$(terraform output -raw pipeline_lambda_role_arn)"
+          } >> "$GITHUB_OUTPUT"
+
+  integration:
+    needs: deploy
+    runs-on: ubuntu-24.04
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+      - run: uv sync --all-groups --frozen
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_DEV }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: "258485600712"
       - name: integration tests
+        env:
+          CIP_STATE_MACHINE_ARN: ${{ needs.deploy.outputs.state_machine_arn }}
+          CIP_LEDGER_TABLE: ${{ needs.deploy.outputs.ledger_table_name }}
+          CIP_LEDGER_TABLE_ARN: ${{ needs.deploy.outputs.ledger_table_arn }}
+          CIP_PIPELINE_ROLE_ARN: ${{ needs.deploy.outputs.pipeline_role_arn }}
         run: uv run pytest -m integration tests/integration -v
