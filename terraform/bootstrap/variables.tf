@@ -3,11 +3,6 @@ variable "region" {
   default = "us-east-1"
 }
 
-variable "github_repository" {
-  type    = string
-  default = "soworks/cripto-intelligence-platform"
-}
-
 variable "alert_email" {
   type = string
 }
