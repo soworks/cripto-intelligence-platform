@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from cip.domain.errors import HistoryError
-from cip.history.bars import DailyBar, parse_kline_zip
+from cip.history.bars import DailyBar, parse_kline_zip, verified_sha256
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "binance-vision"
 DAY_MS = 86_400_000
@@ -214,3 +214,20 @@ def test_partial_day_close_still_parses() -> None:
     payload, checksum = _zip("BTCUSDT", "2024-01", [row])
     bars = parse_kline_zip(payload, symbol="BTCUSDT", period="2024-01", checksum_text=checksum)
     assert bars[0].open_date == date(2024, 1, 1)
+
+
+def test_verified_sha256_returns_the_digest_of_a_matching_payload() -> None:
+    payload, checksum = _load("BTCUSDT-1d-2025-01")
+
+    digest = verified_sha256(payload, checksum, "BTCUSDT-1d-2025-01.zip")
+
+    assert digest == "3a3eb1b723d944deb4dbef5ae361bbe39340a17fe987fe22e397ef03dca268d2"
+
+
+def test_verified_sha256_rejects_a_wrong_payload_and_a_wrong_name() -> None:
+    payload, checksum = _load("BTCUSDT-1d-2025-01")
+
+    with pytest.raises(HistoryError, match="mismatch"):
+        verified_sha256(payload + b"x", checksum, "BTCUSDT-1d-2025-01.zip")
+    with pytest.raises(HistoryError, match="invalid kline checksum"):
+        verified_sha256(payload, checksum, "other.zip")

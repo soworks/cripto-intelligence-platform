@@ -36,7 +36,7 @@ def parse_kline_zip(
     payload: bytes, *, symbol: str, period: str, checksum_text: str
 ) -> tuple[DailyBar, ...]:
     zip_name = f"{symbol}-1d-{period}.zip"
-    _verify_checksum(payload, checksum_text, zip_name)
+    verified_sha256(payload, checksum_text, zip_name)
     csv_name = f"{symbol}-1d-{period}.csv"
     try:
         with zipfile.ZipFile(BytesIO(payload)) as archive:
@@ -56,16 +56,21 @@ def parse_kline_zip(
     return bars
 
 
-def _verify_checksum(payload: bytes, checksum_text: str, zip_name: str) -> None:
+def declared_sha256(checksum_text: str, zip_name: str) -> str:
     parts = checksum_text.strip().split(None, 1)
     if len(parts) != 2 or parts[1] != zip_name or len(parts[0]) != 64:
         raise HistoryError("invalid kline checksum")
     try:
-        digest = bytes.fromhex(parts[0]).hex()
+        return bytes.fromhex(parts[0]).hex()
     except ValueError as error:
         raise HistoryError("invalid kline checksum") from error
+
+
+def verified_sha256(payload: bytes, checksum_text: str, zip_name: str) -> str:
+    digest = declared_sha256(checksum_text, zip_name)
     if hashlib.sha256(payload).hexdigest() != digest:
         raise HistoryError("kline checksum mismatch")
+    return digest
 
 
 def _parse_row(symbol: str, line: str) -> DailyBar:
