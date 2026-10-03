@@ -415,7 +415,9 @@ def test_listed_month_without_a_zip_is_skipped(tmp_path: Path) -> None:
     _recorded_btc_january(server)
     del server.files[monthly_key("BTCUSDT", 2025, 1)]
 
-    _run(tmp_path, server)
+    output = _run(tmp_path, server)
+
+    assert not month_path(output, "BTCUSDT", 2025, 1).exists()
 
 
 def test_daily_checksum_without_a_zip_is_skipped_and_not_stored(tmp_path: Path) -> None:

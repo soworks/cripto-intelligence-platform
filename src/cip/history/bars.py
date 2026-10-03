@@ -83,7 +83,10 @@ def _parse_row(symbol: str, line: str) -> DailyBar:
     step = _DAY_US if unit == "us" else _DAY_MS
     if open_time % step != 0 or not (open_time < close_time < open_time + step):
         raise HistoryError("kline bar must cover one UTC day")
-    opened = datetime.fromtimestamp(open_time / (1_000_000 if unit == "us" else 1_000), UTC)
+    try:
+        opened = datetime.fromtimestamp(open_time / (1_000_000 if unit == "us" else 1_000), UTC)
+    except (ValueError, OverflowError) as error:
+        raise HistoryError("kline timestamp is out of range") from error
     prices = [_decimal(fields[index]) for index in (1, 2, 3, 4)]
     volumes = [_decimal(fields[index]) for index in (5, 7, 9, 10)]
     open_, high, low, close = prices

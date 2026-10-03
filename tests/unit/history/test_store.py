@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from cip.domain.errors import HistoryError
@@ -87,3 +89,14 @@ def test_write_month_rejects_empty_bars_without_creating_file(tmp_path: Path) ->
 
 def test_missing_source_hash_is_none(tmp_path: Path) -> None:
     assert read_source_sha256(tmp_path / "missing.parquet") is None
+
+
+@pytest.mark.parametrize("metadata", [None, {b"other": b"value"}])
+def test_existing_file_without_source_hash_is_none(
+    tmp_path: Path, metadata: dict[bytes, bytes] | None
+) -> None:
+    path = tmp_path / "bars.parquet"
+    table = pa.table({"value": [1]}).replace_schema_metadata(metadata)
+    pq.write_table(table, path)
+
+    assert read_source_sha256(path) is None

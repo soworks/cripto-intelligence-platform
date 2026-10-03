@@ -224,3 +224,14 @@ def test_catalog_http_error_is_rejected() -> None:
         pytest.raises(HistoryError, match="404"),
     ):
         client.list_usdt_symbols()
+
+
+def test_transport_error_becomes_history_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    with (
+        DumpClient(transport=httpx.MockTransport(handler), sleep=lambda _s: None) as client,
+        pytest.raises(HistoryError, match="request failed"),
+    ):
+        client.get_bytes("data/file.zip")

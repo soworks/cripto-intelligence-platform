@@ -96,8 +96,11 @@ def read_month(path: Path) -> tuple[DailyBar, ...]:
 def read_source_sha256(path: Path) -> str | None:
     if not path.exists():
         return None
-    metadata = cast(dict[bytes, bytes], pq.ParquetFile(path).schema_arrow.metadata)
-    return metadata[_SOURCE_SHA256_KEY].decode()
+    metadata = pq.ParquetFile(path).schema_arrow.metadata
+    if metadata is None:
+        return None
+    digest = metadata.get(_SOURCE_SHA256_KEY)
+    return None if digest is None else digest.decode()
 
 
 def load_bars(root: Path) -> dict[str, tuple[DailyBar, ...]]:

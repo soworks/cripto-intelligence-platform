@@ -169,7 +169,10 @@ class DumpClient:
         _require_https(url)
         attempt = 0
         while True:
-            response = self._client.get(url, params=params)
+            try:
+                response = self._client.get(url, params=params)
+            except httpx.HTTPError as error:
+                raise HistoryError("Binance vision request failed") from error
             _require_https(str(response.url))
             if response.status_code == 404 and allow_missing:
                 return None
