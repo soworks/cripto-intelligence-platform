@@ -79,13 +79,13 @@ def _sync_monthly(client: DumpClient, output: Path, symbol: str, year: int, mont
     key = monthly_key(symbol, year, month)
     checksum_text = client.get_text(f"{key}.CHECKSUM")
     if checksum_text is None:
-        raise HistoryError(f"missing checksum for {name}")
+        return
     path = month_path(output, symbol, year, month)
     if read_source_sha256(path) == declared_sha256(checksum_text, name):
         return
     payload = client.get_bytes(key)
     if payload is None:
-        raise HistoryError(f"missing zip for {name}")
+        return
     digest = verified_sha256(payload, checksum_text, name)
     bars = parse_kline_zip(payload, symbol=symbol, period=period, checksum_text=checksum_text)
     if any((bar.open_date.year, bar.open_date.month) != (year, month) for bar in bars):
@@ -129,11 +129,12 @@ def _sync_daily_month(
     if read_source_sha256(path) == source_sha256:
         return
     bars: list[DailyBar] = []
-    for day, checksum_text, _ in found:
+    stored: list[tuple[date, str]] = []
+    for day, checksum_text, digest in found:
         name = f"{symbol}-1d-{day.isoformat()}.zip"
         payload = client.get_bytes(daily_key(symbol, day))
         if payload is None:
-            raise HistoryError(f"missing zip for {name}")
+            continue
         verified_sha256(payload, checksum_text, name)
         parsed = parse_kline_zip(
             payload, symbol=symbol, period=day.isoformat(), checksum_text=checksum_text
@@ -141,6 +142,11 @@ def _sync_daily_month(
         if [bar.open_date for bar in parsed] != [day]:
             raise HistoryError(f"{name} does not hold exactly its own day")
         bars.extend(parsed)
+        stored.append((day, digest))
+    if not bars:
+        return
+    lines = "".join(f"{day.isoformat()} {digest}\n" for day, digest in stored)
+    source_sha256 = hashlib.sha256(lines.encode()).hexdigest()
     write_month(path, tuple(bars), source_sha256=source_sha256)
 
 
