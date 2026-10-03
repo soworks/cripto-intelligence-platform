@@ -1,0 +1,43 @@
+schema_version: 1
+
+universe:
+  quote_assets: [USDT]
+  exclude_stablecoins: true
+  exclude_leveraged_tokens: true
+  minimum_trading_history_days: 90
+  minimum_daily_quote_volume_usd: 5000000
+  minimum_market_cap_usd: 50000000
+  maximum_spread_bps: 50
+
+discovery:
+  max_quant_candidates: 20
+  max_enriched_candidates: 10
+  max_llm_candidates_per_scan: 5
+  new_listing_observation_days: 7
+
+portfolio:
+  core_assets: [BTCUSDT, ETHUSDT]
+  discovery_max_portfolio_pct: 0.10
+
+trading:
+  spot_only: true
+  margin_enabled: false
+  futures_enabled: false
+  leverage_enabled: false
+  withdrawals_enabled: false
+
+risk:
+  max_trade_usd: 75
+  max_trade_portfolio_pct: 0.05
+  minimum_cash_reserve_pct: 0.20
+  max_discovery_asset_pct: 0.01
+  max_daily_trade_usd: 150
+  max_monthly_trade_usd: 750
+
+ai:
+  max_calls_per_day: 10
+  max_calls_per_month: 150
+
+execution:
+  mode: SHADOW
+  human_approval_required: true
