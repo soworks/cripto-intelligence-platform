@@ -35,7 +35,13 @@ Severity scale: **Critical** blocks the build or creates unacceptable risk;
 
 ## Part A - AWS / AI architecture gaps
 
-### A1. Binance.com blocks AWS US regions - Critical
+### A1. Binance.com blocks AWS US regions - Critical (resolved by ADR-0003)
+
+> **Spike result (2026-10-03):** from Lambda in us-east-1, `api.binance.com`
+> returns **451** but `data-api.binance.vision` (public market data) returns
+> **200**; from sa-east-1, both return 200. Decision: market data runs directly from
+> us-east-1 via `data-api.binance.vision`. The sa-east-1 gateway is needed only for
+> signed account/order endpoints (M7). The original analysis follows.
 
 Binance.com returns HTTP 451 to US IP ranges, which include Lambda egress in
 `us-east-1`. The scanner would fail on its first call, and a live executor could
@@ -180,6 +186,11 @@ The doc puts policy in repo YAML and flags in SSM/AppConfig without saying which
 - The executor reads these flags on every invocation, with no cache.
 
 ### A10. LLM layer details missing - Medium
+
+> **Spike finding (2026-10-03):** Bedrock is not usable yet on this account. The
+> Anthropic use-case form has not been submitted, and the Bedrock quotas for
+> Claude Haiku 4.5 and Nova 2 Lite are 0. Submit the form and request quota
+> increases well before M5 (see ADR-0003).
 
 **Recommendation**
 - Default model: **Claude Haiku 4.5** via the `us.` cross-region inference
