@@ -30,6 +30,14 @@ resource "aws_s3_bucket_public_access_block" "tf_state" {
   restrict_public_buckets = true
 }
 
+locals {
+  # Each state prefix is writable only by its deployer and the admin principals.
+  state_writers = {
+    "env/dev"  = "arn:aws:iam::${local.account_id}:role/cip-gha-dev"
+    "env/prod" = "arn:aws:iam::${local.account_id}:role/cip-gha-prod"
+  }
+}
+
 data "aws_iam_policy_document" "tf_state_tls" {
   statement {
     sid     = "DenyInsecureTransport"
@@ -47,6 +55,57 @@ data "aws_iam_policy_document" "tf_state_tls" {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
+    }
+  }
+
+  statement {
+    sid       = "DenyBootstrapStateExceptAdmins"
+    effect    = "Deny"
+    actions   = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*", "s3:RestoreObject"]
+    resources = ["${aws_s3_bucket.tf_state.arn}/bootstrap/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = local.admin_principal_arns
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.state_writers
+    content {
+      sid       = "DenyWrites${replace(title(replace(statement.key, "/", " ")), " ", "")}ExceptDeployer"
+      effect    = "Deny"
+      actions   = ["s3:PutObject*", "s3:DeleteObject*", "s3:RestoreObject"]
+      resources = ["${aws_s3_bucket.tf_state.arn}/${statement.key}/*"]
+      principals {
+        type        = "*"
+        identifiers = ["*"]
+      }
+      condition {
+        test     = "ArnNotLike"
+        variable = "aws:PrincipalArn"
+        values   = concat([statement.value], local.admin_principal_arns)
+      }
+    }
+  }
+
+  statement {
+    sid       = "DenyProdStateReadsExceptProdDeployer"
+    effect    = "Deny"
+    actions   = ["s3:GetObject*"]
+    resources = ["${aws_s3_bucket.tf_state.arn}/env/prod/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "ArnNotLike"
+      variable = "aws:PrincipalArn"
+      values   = concat([local.state_writers["env/prod"]], local.admin_principal_arns)
     }
   }
 }
