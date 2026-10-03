@@ -12,6 +12,22 @@ dev and prod share account 258485600712. Isolation controls:
   boundary (`cip-<env>-workload-boundary`). The dev boundary denies Secrets
   Manager entirely and denies all prod resources. Both boundaries deny ledger mutation.
 
+## Amendment (2026-10-03): CI roles managed by CLI script
+By owner choice, the GitHub OIDC provider and the three `cip-gha-*` roles are managed by
+`scripts/bootstrap_github_oidc.sh` (AWS CLI, policies in `iam/github/`), not Terraform.
+Terraform bootstrap keeps the state bucket, boundaries, budget and CloudTrail. Role ARNs
+are GitHub repository variables (not secrets; an ARN is not a credential).
+- Trust: `StringEquals` on `aud = sts.amazonaws.com` and an exact `sub` per role
+  (`repo:soworks/cripto-intelligence-platform:pull_request`, `:environment:dev`,
+  `:environment:prod`), plus `repository_id` and `repository_owner_id` once the script is
+  run with `gh` authenticated, so a re-created repository with the same name cannot assume them.
+- `cip-gha-plan` has no AWS managed policy. Its inline `cip-gha-plan-read` policy allows
+  only Describe/Get/List on `cip-dev-*` / `cip-prod-*` resources and `/cip/*` parameters,
+  `s3:GetObject`/`ListBucket` on the state bucket's `env/dev/` and `env/prod/` prefixes
+  (no bootstrap state, no CloudTrail bucket), and `sts:GetCallerIdentity`. PR plans run
+  with `-lock=false` because the role cannot write the lock file.
+- `scripts/verify_github_oidc.sh` re-checks the boundaries with `iam:SimulatePrincipalPolicy`.
+
 ## Consequences
 Lower setup cost than AWS Organizations. Blast radius is limited by IAM, not by an
 account boundary. Revisit before M7 if the prod trading secret's risk profile

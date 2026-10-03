@@ -155,6 +155,10 @@ CI cannot create the OIDC provider and state bucket that CI itself needs.
   GitHub OIDC provider, the two deploy roles, Budgets and CloudTrail. It uses the
   S3 backend with `use_lockfile = true` (Terraform 1.10+), so no DynamoDB lock
   table is needed.
+- Resolution (2026-10-03): by owner choice the OIDC provider and the
+  `cip-gha-plan|dev|prod` roles are created by `scripts/bootstrap_github_oidc.sh`
+  (AWS CLI, idempotent) instead of Terraform; the plan role uses a scoped inline
+  read policy instead of `ReadOnlyAccess`. See ADR-0004.
 
 ### A8. Human approval workflow (Telegram) is unspecified - High (blocks M5)
 
