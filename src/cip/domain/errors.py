@@ -28,3 +28,7 @@ class ExchangeGeoBlockedError(MarketDataError):
 
 class HistoryError(CipError):
     """A market-history dump or continuity file is unusable; callers must fail closed."""
+
+
+class BacktestError(CipError):
+    """A backtest input or result is unusable; callers must fail closed."""
