@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–8 are merged. Slice 9 is the simulator and baselines. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–9 are merged. Decision schema is version 2. Score weights are not frozen. M3 is not closed. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -29,7 +29,7 @@ A decision and its outcomes are different objects.
 
 `DecisionRecord` is written once. The identity is schema version, cohort, symbol, evaluation timestamp, policy version, and git SHA. A later payload with that identity is refused. The first file stays.
 
-Required fields: cohort (`BACKTEST`, `ALPHA_PILOT_2026_10`, `SHADOW`, `LIVE`), symbol, evaluation timestamp, policy version, 40-character git SHA, disposition (`INELIGIBLE`, `SCORED`, `BUY`), at least one reason code, feature values, score and score components, rank, regime, and source stamps (name, source time, provenance).
+Required fields: cohort (`BACKTEST`, `ALPHA_PILOT_2026_10`, `SHADOW`, `LIVE`), symbol, evaluation timestamp, policy version, 40-character git SHA, disposition (`INELIGIBLE`, `SCORED`, `BUY`), at least one reason code, feature values, score and score components, rank, published regime, raw regime, and source stamps (name, source time, provenance). Schema version 2 is the version that stores the raw regime.
 
 `INELIGIBLE` has no score, no components, and no rank. `SCORED` and `BUY` have a score, components, a rank, a regime, and features. `BUY` is refused when the regime is `RISK_OFF` or missing. The record has no order id, quantity, or notional. A BUY is a recommendation.
 
@@ -106,6 +106,28 @@ A book trades when its membership changes. An unchanged set holds, and weights t
 Walk-forward splits the sessions into contiguous folds. Extra days stay on the earlier folds. Each fold starts from the original cash and restarts each random stream. A fold shorter than two sessions is refused. One fold is the whole window. The result's strategy book is the continuous window. The folds are the independent replays.
 
 The result is equity, the signal-day picks, and fee drag. It has no hit rate, payoff, or expectancy. Those wait until M4 has real exits.
+
+## Decision schema version 2
+
+Version 1 stored the published regime only. That is not enough to explain hysteresis. A tighter published state can be held while the raw state is already looser, and a session with no confirmed prior can have a raw state and no published state. Version 2 adds `raw_regime`. New decisions are version 2. A version 1 document is refused rather than rewritten. Forward outcomes stay on schema version 1.
+
+## Closure finding: score weights
+
+The information-coefficient function reports Spearman correlation by feature and regime and still refuses to turn a coefficient into a weight. `policies/investment-policy.yaml` has no score weights, so the scan records `score_weights_not_frozen` instead of a score.
+
+The stored dev dataset cannot supply the missing catalog study. Daily klines under `klines/interval=1d/quote=USDT/` are the 11-symbol verification set, not the USDT catalog. Market-regime observations exist only for 2026-10-04. A coefficient needs at least 30 observations in a regime, and those observations would sit in the October pilot window. That window is not a source of weights. No new policy version was written.
+
+M3 stays open until a survivorship-free history can produce the study and the reviewed weights are frozen in policy. Issue #21 stays open with it.
+
+## Closure evidence
+
+Local unit, type, lint, and coverage on this closure: `ruff format --check`, `ruff check`, and `mypy` are clean. `pytest --cov` is 602 passed, 9 deselected, 100% branch coverage (4224 statements, 1264 branches).
+
+Dev deploys already green for the merged slices: daily scan [37229553414](https://github.com/soworks/crypto-intelligence-platform/actions/runs/37229553414), forward outcomes [37230418343](https://github.com/soworks/crypto-intelligence-platform/actions/runs/37230418343), simulator [37232476030](https://github.com/soworks/crypto-intelligence-platform/actions/runs/37232476030).
+
+One scan from the dev bucket, with no provider calls, used session 2026-10-02. That is the latest stored daily bar before 2026-10-04. The point-in-time listings for that session are `1000SATSUSDT`, `BTCUSDT`, `FTTUSDT`, `LUNAUSDT`, `POLUSDT`, and `SUSDT`. There are no stored candidate packets. Market-regime observations are dated 2026-10-04, so they are not inputs for 2026-10-02. Weights were left unset. The scan wrote six decisions, one per snapshot symbol. Every disposition is `INELIGIBLE` with reason `missing_candidate`, score and rank unset, and both regime fields unset. A second run from the same inputs wrote byte-identical files, decision ids, and SHA-256 values. Each returned ledger event's `sha256` matches the stored file and its `decision_key` matches the object key. There is no BUY, and this is not a RISK_OFF score: the session never reached scoring. Those six objects were not uploaded. A different later payload for the same decision id is refused, so writing this incomplete result would block a complete scan of that session. `s3://cip-dev-data-258485600712/decisions/` was empty before this check and was left empty.
+
+Issues #2, #3, #4, #5, #7, #9, #10, and #12 are platform hardening. They are not the reason #21 stays open. They move to milestone M4 and stay open.
 
 ## Out of this milestone
 

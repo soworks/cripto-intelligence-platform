@@ -153,6 +153,7 @@ def test_listed_bases_are_excluded_without_becoming_a_buy() -> None:
         score_components=None,
         rank=None,
         regime=None,
+        raw_regime=None,
         sources=(
             SourceStamp(
                 name="exchangeInfo",

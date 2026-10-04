@@ -13,7 +13,8 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_valida
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
-SCHEMA_VERSION: Literal[1] = 1
+DECISION_SCHEMA_VERSION: Literal[2] = 2
+OUTCOME_SCHEMA_VERSION: Literal[1] = 1
 _DECISION_FIELDS = frozenset(
     {
         "schema_version",
@@ -29,6 +30,7 @@ _DECISION_FIELDS = frozenset(
         "score_components",
         "rank",
         "regime",
+        "raw_regime",
         "sources",
     }
 )
@@ -130,7 +132,7 @@ class SourceStamp(_Strict):
 class DecisionRecord(_Strict):
     """One immutable evaluation. A BUY is a recommendation, not an order."""
 
-    schema_version: Literal[1] = SCHEMA_VERSION
+    schema_version: Literal[2] = DECISION_SCHEMA_VERSION
     cohort: Cohort
     symbol: str
     evaluated_at: datetime
@@ -145,6 +147,7 @@ class DecisionRecord(_Strict):
     ]
     rank: int | None = Field(default=None, ge=1)
     regime: Literal["RISK_ON", "NEUTRAL", "RISK_OFF"] | None
+    raw_regime: Literal["RISK_ON", "NEUTRAL", "RISK_OFF"] | None
     sources: tuple[SourceStamp, ...] = Field(min_length=1)
 
     @field_validator("symbol")
@@ -175,6 +178,8 @@ class DecisionRecord(_Strict):
 
     @model_validator(mode="after")
     def _disposition_matches_evidence(self) -> Self:
+        if self.regime is not None and self.raw_regime is None:
+            raise ValueError("a published regime has a raw state")
         if self.disposition is Disposition.INELIGIBLE:
             if self.score is not None or self.score_components is not None or self.rank is not None:
                 raise ValueError("an ineligible decision has no score or rank")
@@ -210,6 +215,7 @@ class DecisionRecord(_Strict):
             else {name: format(value, "f") for name, value in self.score_components.items()},
             "rank": self.rank,
             "regime": self.regime,
+            "raw_regime": self.raw_regime,
             "sources": [
                 {
                     "name": source.name,
@@ -244,6 +250,7 @@ class DecisionRecord(_Strict):
             score_components=None if components is None else _decimal_map(components),
             rank=document["rank"],
             regime=document["regime"],
+            raw_regime=document["raw_regime"],
             sources=tuple(
                 SourceStamp(
                     name=item["name"],
@@ -258,7 +265,7 @@ class DecisionRecord(_Strict):
 class ForwardOutcome(_Strict):
     """Later market results for one decision. This object cannot restate the decision."""
 
-    schema_version: Literal[1] = SCHEMA_VERSION
+    schema_version: Literal[1] = OUTCOME_SCHEMA_VERSION
     decision_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     horizon_days: Literal[7, 14, 30, 60]
     absolute_return: Annotated[Decimal, BeforeValidator(_finite_decimal)]

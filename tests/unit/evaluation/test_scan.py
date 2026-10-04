@@ -459,6 +459,117 @@ def test_a_passing_symbol_without_a_published_regime_is_not_scored(tmp_path: Pat
     assert record.score is None
 
 
+def test_every_snapshot_symbol_is_one_decision_including_rejections(tmp_path: Path) -> None:
+    symbols = ("FDUSDUSDT", "SOLUSDT", "ETHUSDT", "MISSINGUSDT")
+    bars = {
+        "BTCUSDT": _series("BTCUSDT", 200, last="110"),
+        "SOLUSDT": _series("SOLUSDT", 200, last="110"),
+        "ETHUSDT": _series("ETHUSDT", 200),
+        "MISSINGUSDT": _series("MISSINGUSDT", 200),
+    }
+    result = _scan(
+        tmp_path,
+        snapshot=_snapshot(*symbols),
+        candidates={
+            "FDUSDUSDT": _candidate("FDUSDUSDT", "FDUSD", "fdusd"),
+            "SOLUSDT": _candidate("SOLUSDT", "SOL", "solana"),
+            "ETHUSDT": _candidate("ETHUSDT", "ETH", "ethereum"),
+        },
+        bars=bars,
+        observations=_observations(),
+        prior=(
+            PriorSession(session=SESSION - timedelta(days=1), raw="RISK_ON", published="RISK_ON"),
+        ),
+    )
+    assert [record.symbol for record in result.records] == list(symbols)
+    assert len({record.symbol for record in result.records}) == len(symbols)
+    assert {record.disposition for record in result.records} == {Disposition.INELIGIBLE}
+    written = {path.parent.name.removeprefix("symbol=") for path in tmp_path.rglob("*.json")}
+    assert written == set(symbols)
+
+
+def test_identical_stored_inputs_write_byte_identical_decisions(tmp_path: Path) -> None:
+    bars = {
+        "BTCUSDT": _series("BTCUSDT", 200, last="110"),
+        "SOLUSDT": _series("SOLUSDT", 200, last="110"),
+        "ETHUSDT": _series("ETHUSDT", 200),
+    }
+    shared = {
+        "snapshot": _snapshot("FDUSDUSDT", "SOLUSDT", "ETHUSDT"),
+        "candidates": {
+            "FDUSDUSDT": _candidate("FDUSDUSDT", "FDUSD", "fdusd"),
+            "SOLUSDT": _candidate("SOLUSDT", "SOL", "solana"),
+        },
+        "bars": bars,
+        "observations": _observations(),
+        "prior": (
+            PriorSession(session=SESSION - timedelta(days=1), raw="RISK_ON", published="RISK_ON"),
+        ),
+    }
+    left_root = tmp_path / "left"
+    right_root = tmp_path / "right"
+    left = _scan(left_root, writer=FileDecisionWriter(left_root), **shared)
+    right = _scan(right_root, writer=FileDecisionWriter(right_root), **shared)
+    assert left.records == right.records
+    for stored, again in zip(left.stored, right.stored, strict=True):
+        assert stored.key == again.key
+        assert stored.sha256 == again.sha256
+        assert decision_id(stored.record) == decision_id(again.record)
+        assert (left_root / stored.key).read_bytes() == (right_root / again.key).read_bytes()
+        document = stored.record.to_document()
+        assert document["reason_codes"] == list(stored.record.reason_codes)
+        assert document["rank"] == stored.record.rank
+        assert document["regime"] == stored.record.regime
+        assert document["raw_regime"] == stored.record.raw_regime
+        assert document["score"] == (
+            None if stored.record.score is None else format(stored.record.score, "f")
+        )
+    source = Path(run_daily_scan.__code__.co_filename).read_text()
+    for forbidden in ("cip.adapters", "boto3", "urllib", "requests"):
+        assert forbidden not in source
+
+
+def test_hysteresis_keeps_the_raw_regime_on_the_decision(tmp_path: Path) -> None:
+    bars = {
+        "BTCUSDT": _series("BTCUSDT", 200, last="110"),
+        "SOLUSDT": _series("SOLUSDT", 200, last="110"),
+        "ETHUSDT": _series("ETHUSDT", 200, last="110"),
+    }
+    withheld = _scan(
+        tmp_path,
+        bars=bars,
+        observations=_observations(),
+        prior=(),
+        weights={"circulating_ratio": Decimal("1")},
+    )
+    opening = withheld.records[0]
+    assert opening.disposition is Disposition.INELIGIBLE
+    assert opening.regime is None
+    assert opening.raw_regime == "RISK_ON"
+    assert opening.reason_codes == ("hysteresis",)
+    held_root = tmp_path / "held"
+    held = _scan(
+        held_root,
+        writer=FileDecisionWriter(held_root),
+        bars={
+            "BTCUSDT": _series("BTCUSDT", 200, last="99"),
+            "SOLUSDT": _series("SOLUSDT", 200, last="110"),
+            "ETHUSDT": _series("ETHUSDT", 200, last="110"),
+        },
+        observations=_observations(),
+        prior=(
+            PriorSession(session=SESSION - timedelta(days=1), raw="NEUTRAL", published="RISK_OFF"),
+        ),
+        weights={"circulating_ratio": Decimal("1")},
+    )
+    decision = held.records[0]
+    assert decision.disposition is Disposition.SCORED
+    assert decision.reason_codes == ("risk_off",)
+    assert decision.regime == "RISK_OFF"
+    assert decision.raw_regime == "NEUTRAL"
+    assert decision.to_document()["raw_regime"] == "NEUTRAL"
+
+
 def test_the_scan_does_not_import_a_provider() -> None:
     source = Path(run_daily_scan.__code__.co_filename).read_text()
     assert "cip.adapters" not in source
