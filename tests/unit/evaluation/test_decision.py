@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta, timezone
@@ -16,7 +17,14 @@ from cip.evaluation.decision import (
     SourceStamp,
     decision_id,
 )
-from cip.evaluation.store import _require_inside, append_decision, append_outcome
+from cip.evaluation.store import (
+    ObjectDecisionWriter,
+    _require_inside,
+    append_decision,
+    append_decision_to,
+    append_outcome,
+    decision_key,
+)
 
 SHA = "a" * 40
 NOW = datetime(2026, 10, 4, tzinfo=UTC)
@@ -388,3 +396,65 @@ def test_a_lost_create_keeps_the_first_body(
     assert append_decision(tmp_path, record) is False
     stored = next((tmp_path / "decisions").rglob("*.json"))
     assert json.loads(stored.read_text())["score"] == "80"
+    assert stored.relative_to(tmp_path).as_posix() == decision_key(record)
+
+
+class _Memory:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    def read(self, key: str) -> bytes | None:
+        return self.objects.get(key)
+
+    def create(self, key: str, body: bytes) -> bool:
+        if key in self.objects:
+            return False
+        self.objects[key] = body
+        return True
+
+
+class _Scripted:
+    def __init__(self, reads: list[bytes | None], *, created: bool) -> None:
+        self._reads = list(reads)
+        self._created = created
+
+    def read(self, key: str) -> bytes | None:
+        return self._reads.pop(0)
+
+    def create(self, key: str, body: bytes) -> bool:
+        return self._created
+
+
+def test_an_object_store_keeps_the_first_body() -> None:
+    store = _Memory()
+    record = _buy()
+    stored = ObjectDecisionWriter(store).write(record)
+    assert stored.created is True
+    assert stored.key == decision_key(record)
+    assert stored.sha256 == hashlib.sha256(store.objects[stored.key]).hexdigest()
+    assert append_decision_to(store, record).created is False
+    revised = _buy(
+        score=Decimal("81"),
+        score_components={"trend": Decimal("51"), "rs": Decimal("30")},
+    )
+    with pytest.raises(EvaluationError, match="different payload"):
+        append_decision_to(store, revised)
+    assert json.loads(store.objects[stored.key])["score"] == "80"
+
+
+def test_a_lost_object_create_keeps_matching_bytes() -> None:
+    record = _buy()
+    body = json.dumps(record.to_document(), sort_keys=True).encode()
+    stored = append_decision_to(_Scripted([None, body], created=False), record)
+    assert stored.created is False
+    assert stored.sha256 == hashlib.sha256(body).hexdigest()
+
+
+def test_a_lost_object_create_refuses_a_different_body() -> None:
+    with pytest.raises(EvaluationError, match="different payload"):
+        append_decision_to(_Scripted([None, b"other"], created=False), _buy())
+
+
+def test_a_lost_object_create_refuses_a_missing_body() -> None:
+    with pytest.raises(EvaluationError, match="disappeared"):
+        append_decision_to(_Scripted([None, None], created=False), _buy())

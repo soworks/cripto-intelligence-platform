@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–5 are merged. Slice 6 is features, score v2, and the information-coefficient study. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–6 are merged. Slice 7 is the daily scan. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -15,7 +15,7 @@ Each slice is one implementation issue. Later slices call the replay contracts i
 4. **Fundamentals.** CoinGecko primary, CMC cross-check, DefiLlama. Missing data is a rejection, not a filled value. This slice.
 5. **Regime.** Hysteresis and the per-regime discovery policy already in `hypotheses`. RISK_OFF produces no BUY. This slice.
 6. **Features, score v2, and the information-coefficient study.** Weights freeze in policy after the study. Liquidity and portfolio fit stay out of the score. This slice.
-7. **Daily scan.** Discover → gates → features → regime → score → record, after the 00:00 UTC close. Every evaluated symbol, including rejections, gets one decision. The ledger stores the decision key and its SHA-256. Zero provider calls on the score path.
+7. **Daily scan.** Discover → gates → features → regime → score → record, after the 00:00 UTC close. Every evaluated symbol, including rejections, gets one decision. The ledger stores the decision key and its SHA-256. Zero provider calls on the score path. This slice.
 8. **Forward outcomes.** At 7/14/30/60 days, read the stored decision and later bars. Write an outcome document. Do not change the decision.
 9. **Simulator and baselines.** Event-driven daily replay, equal-weight eligible universe, 1,000-run random baseline with a persisted seed. Uses slices 2, 5, and 6, and the M4 exit contract when that contract exists. M4 still owns exits.
 
@@ -74,6 +74,16 @@ Hysteresis uses `hysteresis_days`. RISK_OFF and any tighter state publish on the
 `extension_count` is how many of the three documented triggers are true: more than 2.5 ATR above EMA20, RSI above 78, or a 7-day return strictly above more than 95% of the other symbols that have one. A single name does not fire that leg. A zero ATR or an undefined flat RSI leaves the count missing. The count is only 0, 1, 2, or 3, and the score refuses any other value. A listing or a feature does not create a BUY.
 
 `combine` applies caller-supplied weights to the volatility-adjusted relative-strength features, the extension count, and the tokenomics fields. The extension weight is always a penalty. An empty weight map is refused. Liquidity and portfolio fit are refused. The study reports Spearman correlation with later excess return for each feature and regime. Fewer than 30 observations produce no coefficient. A complete study still does not choose or write weights; the policy has none until a catalog study can freeze them.
+
+## Slice 7 daily scan
+
+`run_daily_scan` reads a stored universe snapshot, stored bars, stored observations, and stored candidate packets. It does not call a provider. The session is the daily bar's open date. The decision time is the next 00:00 UTC, when that bar has closed. An earlier clock writes nothing.
+
+Every snapshot symbol gets one decision, including a symbol with no packet. A symbol that fails a gate is `INELIGIBLE` and has no score or rank. Features are still stored when the bars can produce them. BTCUSDT is the index and is left out of breadth. A published regime with no frozen weights is `INELIGIBLE` with `score_weights_not_frozen`. The policy still has no weights.
+
+A score is ranked only among scored symbols. `RISK_OFF` stays `SCORED`. `NEUTRAL` also requires `rs_30d_skip_1` to be positive. A score below the published state's `min_score` stays `SCORED`. Otherwise the disposition is `BUY`, which is a recommendation and still has no order id, quantity, or notional.
+
+The object key is `decisions/cohort={cohort}/date={utc-close-date}/symbol={symbol}/{id}.json`. The ledger event `DECISION_RECORDED` stores that key and the SHA-256 of the stored bytes.
 
 ## Out of this milestone
 
