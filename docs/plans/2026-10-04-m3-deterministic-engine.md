@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–9 are merged. Decision schema is version 2. Score weights are not frozen. M3 is not closed. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–9 are implemented. Decision schema is version 2. Score weights are not frozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -118,6 +118,41 @@ The information-coefficient function reports Spearman correlation by feature and
 The stored dev dataset cannot supply the missing catalog study. Daily klines under `klines/interval=1d/quote=USDT/` are the 11-symbol verification set, not the USDT catalog. Market-regime observations exist only for 2026-10-04. A coefficient needs at least 30 observations in a regime, and those observations would sit in the October pilot window. That window is not a source of weights. No new policy version was written.
 
 M3 stays open until a survivorship-free history can produce the study and the reviewed weights are frozen in policy. Issue #21 stays open with it.
+
+## Pre-pilot weight freeze is blocked
+
+[#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open. This is a documentation record. It does not change policy, weights, thresholds, or scan behavior.
+
+- M3 slices 1–9 are implemented.
+- #21 remains open because Score v2 weights cannot yet be defensibly frozen.
+- The blocker is insufficient point-in-time calibration data, particularly historical tokenomics.
+- Current tokenomics must never be projected backward onto historical sessions.
+- The 30-observation minimum remains unchanged.
+- `ALPHA_PILOT_2026_10` decisions and outcomes are excluded from weight derivation and tuning.
+- Both the calibration decision session and its forward-outcome window must be outside 2026-10-19 through 2026-10-31.
+- `score_weights_not_frozen` is the expected fail-closed state until calibration is possible.
+- A Binance Vision catalog backfill may later improve historical price and universe coverage. It does not solve historical tokenomics.
+- No policy version should be minted until defensible weights exist.
+
+The weighted features are the six volatility-adjusted relative-strength series (`rs_{30,90}d_vol_skip_{1,2,3}`), `extension_count`, and four tokenomics fields (`circulating_ratio`, `fdv_to_market_cap`, `unlock_pct_14d`, `unlock_pct_90d`). `combine` refuses a weighted feature that is missing, so a frozen tokenomics weight without a point-in-time value fails the score closed.
+
+What can be reconstructed from stored or officially dated history:
+
+- The six relative-strength features and `extension_count` come from daily bars. Binance Vision monthly klines are point-in-time, and a symbol contributes a bar only on or after its first open date. The dev bucket holds that history for 11 verification symbols, including BTCUSDT back to 2017. Eleven names are not the USDT universe. Breadth and the extension percentile on that set would mislabel both regimes and penalties. The existing history sync can ingest the Vision catalog later. That ingestion is not look-ahead, and it still does not supply tokenomics.
+- BTC's 200-day average and 90-day drawdown are on the stored BTCUSDT bars.
+- DefiLlama `stablecoincharts/all` returns a dated supply chart. The recorder keeps the last point. Past points in that chart are reconstructable. Their magnitude is not a regime gate. Presence is.
+
+What cannot be used:
+
+- `btc_dominance` in the bucket exists for 2026-10-04. The recorder reads CoinGecko `/global`, which is the current percentage. A past session with no stored reading is `missing_btc_dominance`, and `classify` then publishes no regime. Deriving a stand-in from today's percentage, or from a ratio we have not stored as the observation, does not satisfy that gate.
+- `circulating_ratio` and `fdv_to_market_cap` are current CoinGecko market fields. No as-of supply or FDV history is stored. Today's supplies stamped onto an old session are look-ahead.
+- `unlock_pct_14d` and `unlock_pct_90d` need the unlock schedule as it was known on the session. No as-of schedule is stored. A current schedule applied to a past date uses cliffs and amounts that may have been announced later.
+
+`classify` drops the session when either regime observation is missing. Without a published regime, those rows cannot enter the per-regime study. New daily snapshots from 2026-10-04 through 2026-10-18 are fewer than 30 sessions, and a forward excess that reaches 2026-10-19 or later is inside the pilot window. Calendar time before the pilot cannot fill the sample.
+
+The scan therefore keeps failing closed with `score_weights_not_frozen`. That is not a scored `RISK_OFF` result, and it is not a ranked `BUY`.
+
+Safest calibration set: persist point-in-time bars, regime observations, and candidate tokenomics from each closed session into a research record that is not cohort `ALPHA_PILOT_2026_10`. Leave the pilot decisions and their outcomes out of the join. Freeze only after a study on that research record has at least 30 observations for every weighted feature in every regime that occurs, with both the session and the forward window outside 2026-10-19 through 2026-10-31. A later Vision catalog sync can support the price features and breadth. It does not unlock a tokenomics weight.
 
 ## Closure evidence
 
