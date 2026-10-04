@@ -17,9 +17,9 @@ FUTURES_BASE_URL = "https://fapi.binance.com"
 _DEPTH_BAND = Decimal("0.02")
 
 
-def fetch_json(client: httpx.Client, url: str) -> object:
+def fetch_json(client: httpx.Client, url: str, params: dict[str, str] | None = None) -> object:
     try:
-        response = client.get(url)
+        response = client.get(url, params=params)
     except httpx.TimeoutException as error:
         raise RecorderError("timeout") from error
     except httpx.HTTPError as error:
@@ -29,7 +29,7 @@ def fetch_json(client: httpx.Client, url: str) -> object:
     if response.status_code != 200:
         raise RecorderError(f"status {response.status_code}")
     try:
-        return json.loads(response.text, parse_float=Decimal)
+        return json.loads(response.text, parse_float=Decimal, parse_constant=_reject_constant)
     except json.JSONDecodeError as error:
         raise RecorderError("malformed response") from error
 
@@ -195,9 +195,16 @@ def _required_decimal(body: dict[str, Any], key: str) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (Decimal, str, int, float)):
         raise RecorderError(f"malformed {key}")
     try:
-        return Decimal(str(value))
+        number = Decimal(str(value))
     except InvalidOperation as error:
         raise RecorderError(f"malformed {key}") from error
+    if not number.is_finite():
+        raise RecorderError(f"non-finite {key}")
+    return number
+
+
+def _reject_constant(token: str) -> None:
+    raise json.JSONDecodeError("non-finite number", token, 0)
 
 
 def _unix_seconds(value: object) -> datetime:

@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from cip.adapters.binance import BinanceMarketClient
-from cip.domain.errors import PolicyError, RecorderError
+from cip.domain.errors import MarketDataError, PolicyError, RecorderError
 from cip.domain.policy import load_policy
 from cip.recorders.collect import collect_live, persist
 
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
                 futures=futures,
             )
         persist(args.output, result)
-    except (RecorderError, PolicyError, OSError) as error:
+    except (RecorderError, PolicyError, MarketDataError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(
