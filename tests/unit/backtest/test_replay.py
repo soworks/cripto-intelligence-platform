@@ -283,6 +283,63 @@ def test_risk_off_holds_the_book_except_for_an_explicit_exit() -> None:
     assert sold.strategy.equity[2][1] == quantity * Decimal("100") * (1 - _DRAG)
 
 
+def test_a_blocked_partial_exit_sells_only_the_name_that_left() -> None:
+    days = (_D0, _D1, _D2)
+    bars = _flat(("AAA", "BBB", "CCC"), days, closes={("BBB", _D2): "200"})
+    exits = Exits({("AAA", _D1), ("AAA", _D2)})
+    result = _replay(
+        bars=bars,
+        eligibility=Gate({"AAA", "BBB", "CCC"}),
+        scorer=Scores({"AAA": Decimal("3"), "BBB": Decimal("2"), "CCC": Decimal("1")}),
+        selection_count=3,
+        entries_allowed={_D0: True, _D1: False, _D2: False},
+        exit_rules=exits,
+        fee_rate=Decimal(0),
+        spread=Decimal(0),
+        slippage=Decimal(0),
+    )
+
+    assert result.strategy.picks[1][1] == ("BBB", "CCC")
+    assert result.strategy.equity[2][1] == Decimal(4000) / 3
+    assert result.strategy.fee_drag == 0
+
+
+def test_a_blocked_partial_exit_does_not_charge_the_names_that_stay() -> None:
+    days = (_D0, _D1, _D2)
+    drag = Decimal("0.01")
+    exits = Exits({("AAA", _D1)})
+    result = _replay(
+        bars=_flat(("AAA", "BBB"), days),
+        scorer=Scores({"AAA": Decimal("2"), "BBB": Decimal("1")}),
+        selection_count=2,
+        entries_allowed={_D0: True, _D1: False, _D2: False},
+        exit_rules=exits,
+        fee_rate=drag,
+        spread=Decimal(0),
+        slippage=Decimal(0),
+    )
+
+    unit = Decimal("100") * (1 + drag)
+    quantity = (_CASH / 2) / unit
+    sale = quantity * Decimal("100") * drag
+    assert result.strategy.fee_drag == _CASH * drag / (1 + drag) + sale
+    assert result.strategy.picks[1][1] == ("BBB",)
+
+
+def test_an_open_exit_sells_the_book_on_the_next_open() -> None:
+    exits = Exits({("AAA", _D1)})
+    result = _replay(
+        bars=_flat(("AAA",), (_D0, _D1, _D2)),
+        eligibility=Gate({"AAA"}),
+        scorer=Scores({"AAA": Decimal("1")}),
+        exit_rules=exits,
+    )
+
+    quantity = _CASH / (Decimal("100") * (1 + _DRAG))
+    assert result.strategy.picks[1][1] == ()
+    assert result.strategy.equity[2][1] == quantity * Decimal("100") * (1 - _DRAG)
+
+
 def test_an_exit_on_the_signal_prevents_the_entry() -> None:
     exits = Exits({("AAA", _D0), ("AAA", _D1)})
     result = _replay(exit_rules=exits)
@@ -409,6 +466,7 @@ def test_replay_does_not_copy_eligibility_scoring_or_exits() -> None:
         ({"fold_count": 0}, "fold count"),
         ({"fold_count": True}, "fold count"),
         ({"n_runs": 999}, "1000"),
+        ({"fee_rate": Decimal("1")}, "drag"),
         ({"entries_allowed": {_D0: 1, _D1: True}}, "entries_allowed"),
     ],
 )

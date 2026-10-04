@@ -2,9 +2,15 @@
 
 The simulator calls the eligibility, score, and exit contracts. It does not
 recompute those rules. Regime is the caller's published new-entries flag.
-A missing date blocks entries. M4 still owns exit rules, so a book is sold
-only when an exit contract says so. Membership changes trade; an unchanged
-set holds, and weights then drift with price.
+Omitting that map leaves entries open. A missing date blocks entries. M4 still
+owns exit rules, so a book is sold only when an exit contract says so.
+Membership changes trade. An unchanged set holds, and weights then drift.
+When entries are allowed, a new set is sold and bought back to equal weight.
+When entries are blocked, a partial exit sells only the names that left and
+leaves the sale proceeds in cash.
+
+`strategy` on the result is one continuous book. `folds` are the independent
+walk-forward replays. Each random run draws again on every session.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ from cip.history.bars import DailyBar
 _RUNS = 1000
 _ONE = Decimal(1)
 
-type Target = Callable[[date, Mapping[str, Decimal]], tuple[str, ...]]
+type Target = Callable[[date, Mapping[str, Decimal]], tuple[tuple[str, ...], bool]]
 
 
 @dataclass(frozen=True)
@@ -84,7 +90,7 @@ def replay(
     plan = _Plan(
         book=book,
         capital=_positive(capital, "capital"),
-        drag=_cost(fee_rate) + _cost(spread) / 2 + _cost(slippage),
+        drag=_drag(fee_rate, spread, slippage),
         eligibility=eligibility,
         scorer=scorer,
         selection_count=_positive_int(selection_count, "selection count"),
@@ -150,17 +156,18 @@ def _simulate(
 ) -> tuple[BookPath, BookPath, tuple[BookPath, ...]]:
     symbols = tuple(plan.book)
 
-    def strategy(day: date, positions: Mapping[str, Decimal]) -> tuple[str, ...]:
-        return _strategy_target(day, symbols, positions, plan)
+    def strategy(day: date, positions: Mapping[str, Decimal]) -> tuple[tuple[str, ...], bool]:
+        return _strategy_target(day, symbols, positions, plan), _entries_open(plan.entries, day)
 
-    def equal(day: date, _positions: Mapping[str, Decimal]) -> tuple[str, ...]:
-        return _eligible_names(day, symbols, plan.eligibility)
+    def equal(day: date, _positions: Mapping[str, Decimal]) -> tuple[tuple[str, ...], bool]:
+        return _eligible_names(day, symbols, plan.eligibility), True
 
     def one_random(run_seed: int) -> BookPath:
         picker = random.Random(run_seed)  # noqa: S311 - seeded baseline, not a secret
 
-        def pick(day: date, _positions: Mapping[str, Decimal]) -> tuple[str, ...]:
-            return _random_target(day, symbols, plan.eligibility, plan.selection_count, picker)
+        def pick(day: date, _positions: Mapping[str, Decimal]) -> tuple[tuple[str, ...], bool]:
+            names = _random_target(day, symbols, plan.eligibility, plan.selection_count, picker)
+            return names, True
 
         return _book(sessions, plan, pick)
 
@@ -174,34 +181,37 @@ def _simulate(
 def _book(sessions: tuple[date, ...], plan: _Plan, target_for: Target) -> BookPath:
     cash = plan.capital
     positions: dict[str, Decimal] = {}
-    pending: tuple[str, ...] | None = None
+    pending: tuple[tuple[str, ...], bool] | None = None
     equity: list[tuple[date, Decimal]] = []
     picks: list[tuple[date, tuple[str, ...]]] = []
     fee_drag = Decimal(0)
     last = len(sessions) - 1
     for index, day in enumerate(sessions):
         if pending is not None:
-            cash, positions, paid = _fill(pending, day, cash, positions, plan)
+            cash, positions, paid = _fill(pending[0], pending[1], day, cash, positions, plan)
             fee_drag += paid
             pending = None
         marked = cash
         for symbol, quantity in positions.items():
             marked += quantity * plan.book[symbol][day].close
         equity.append((day, marked))
-        target = target_for(day, positions)
+        target, redeploy = target_for(day, positions)
         picks.append((day, target))
         if target != tuple(sorted(positions)) and index != last:
-            pending = target
+            pending = (target, redeploy)
     return BookPath(tuple(equity), tuple(picks), fee_drag)
 
 
 def _fill(
     target: tuple[str, ...],
+    redeploy: bool,
     day: date,
     cash: Decimal,
     positions: Mapping[str, Decimal],
     plan: _Plan,
 ) -> tuple[Decimal, dict[str, Decimal], Decimal]:
+    if not redeploy:
+        return _reduce(target, day, cash, positions, plan)
     paid = Decimal(0)
     for symbol, quantity in positions.items():
         gross = quantity * plan.book[symbol][day].open
@@ -219,6 +229,26 @@ def _fill(
         bought[symbol] = budget / unit
         paid += budget * plan.drag / (_ONE + plan.drag)
     return Decimal(0), bought, paid
+
+
+def _reduce(
+    target: tuple[str, ...],
+    day: date,
+    cash: Decimal,
+    positions: Mapping[str, Decimal],
+    plan: _Plan,
+) -> tuple[Decimal, dict[str, Decimal], Decimal]:
+    wanted = set(target)
+    kept: dict[str, Decimal] = {}
+    paid = Decimal(0)
+    for symbol, quantity in positions.items():
+        if symbol in wanted:
+            kept[symbol] = quantity
+            continue
+        gross = quantity * plan.book[symbol][day].open
+        cash += gross * (_ONE - plan.drag)
+        paid += gross * plan.drag
+    return cash, kept, paid
 
 
 def _strategy_target(
@@ -351,6 +381,13 @@ def _positive(value: object, name: str) -> Decimal:
     if type(value) is not Decimal or not value.is_finite() or value <= 0:
         raise BacktestError(f"{name} must be a positive decimal")
     return value
+
+
+def _drag(fee_rate: object, spread: object, slippage: object) -> Decimal:
+    drag = _cost(fee_rate) + _cost(spread) / 2 + _cost(slippage)
+    if drag >= _ONE:
+        raise BacktestError("cost drag must be below 1")
+    return drag
 
 
 def _cost(value: object) -> Decimal:

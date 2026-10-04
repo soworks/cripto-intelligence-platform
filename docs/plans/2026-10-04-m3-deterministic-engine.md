@@ -95,15 +95,15 @@ The eligible-universe-relative return is the asset return minus the equal-weight
 
 ## Slice 9 simulator and baselines
 
-`replay` is a daily event loop. It calls `Eligibility.eligible`, `Scorer.score`, and, when an exit contract is passed, `ExitRules.exit_due`. It does not import eligibility, scoring, regime classification, or sizing, and it does not replace the BTC and BTC/ETH DCA engine. The caller supplies the published regime as a date-to-new-entries flag. A missing date blocks entries. No exit contract means no invented sell.
+`replay` is a daily event loop. It calls `Eligibility.eligible`, `Scorer.score`, and, when an exit contract is passed, `ExitRules.exit_due`. It does not import eligibility, scoring, regime classification, or sizing, and it does not replace the BTC and BTC/ETH DCA engine. The caller supplies the published regime as a date-to-new-entries flag. Omitting the map leaves entries open. A missing date blocks entries. No exit contract means no invented sell. The sum of the fee, half-spread, and slippage must stay below one.
 
 A signal is formed at the close. The fill is the open of the next supplied session, which need not be the next calendar day. The last session can form a signal and does not fill it. Cost is the taker fee plus half the spread plus slippage, all non-negative decimal fractions. A buy pays the open times one plus that drag. A sell receives the open times one minus that drag. Cash is deployed equally across the target names. The last name receives any remainder so the cash balance is fully deployed.
 
 The strategy holds the top `selection_count` eligible names by score, then by symbol. A shorter eligible set is taken whole. The equal-weight book holds every eligible name. The random book draws 1,000 runs from a caller seed. Each run seed is drawn with `Random(seed).randrange(2**63)`, and that run samples only after the eligible names are sorted. The result stores the master seed and the run seeds. An eligible set no larger than the selection count is taken whole, with no draw.
 
-A book trades when its membership changes. An unchanged set holds, and weights then drift with price. Blocked entries do not rebalance the strategy and do not invent a sell. An explicit exit can still sell. The equal-weight and random books follow eligibility only; they are the opportunity set, not the regime policy.
+A book trades when its membership changes. An unchanged set holds, and weights then drift with price. When entries are allowed, a new set is sold and bought back to equal weight, including names that stayed. When entries are blocked, a partial exit sells only the names that left, leaves the other quantities unchanged, and leaves the sale proceeds in cash. The equal-weight and random books follow eligibility only; they are the opportunity set, not the regime policy. Each random run draws again every session.
 
-Walk-forward splits the sessions into contiguous folds. Extra days stay on the earlier folds. Each fold starts from the original cash and restarts each random stream. A fold shorter than two sessions is refused. One fold is the whole window.
+Walk-forward splits the sessions into contiguous folds. Extra days stay on the earlier folds. Each fold starts from the original cash and restarts each random stream. A fold shorter than two sessions is refused. One fold is the whole window. The result's strategy book is the continuous window. The folds are the independent replays.
 
 The result is equity, the signal-day picks, and fee drag. It has no hit rate, payoff, or expectancy. Those wait until M4 has real exits.
 
