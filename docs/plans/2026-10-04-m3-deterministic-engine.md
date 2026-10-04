@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–9 are implemented. Decision schema is version 2. Score weights are not frozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–9 are implemented. Decision schema is version 2. Score weights are not frozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open. M3-C, Score v2 Calibration & Exit Validation, is `docs/plans/2026-10-05-m3-score-v2-calibration.md`. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -153,6 +153,8 @@ What cannot be used:
 The scan therefore keeps failing closed with `score_weights_not_frozen`. That is not a scored `RISK_OFF` result, and it is not a ranked `BUY`.
 
 Safest calibration set: persist point-in-time bars, regime observations, and candidate tokenomics from each closed session into a research record that is not cohort `ALPHA_PILOT_2026_10`. Leave the pilot decisions and their outcomes out of the join. Freeze only after a study on that research record has at least 30 observations for every weighted feature in every regime that occurs, with both the session and the forward window outside 2026-10-19 through 2026-10-31. A later Vision catalog sync can support the price features and breadth. It does not unlock a tokenomics weight.
+
+That calibration is sub-phase M3-C. The plan is `docs/plans/2026-10-05-m3-score-v2-calibration.md`. The blocker in this section still stands.
 
 ## Closure evidence
 
