@@ -33,13 +33,14 @@ class PriorSession(_Strict):
 
     session: date
     raw: RegimeName
-    published: RegimeName
+    published: RegimeName | None
 
 
 class RegimeDecision(_Strict):
     """Published regime and the discovery policy for that state. Not a BUY."""
 
     regime: RegimeName | None
+    raw: RegimeName | None
     reason_codes: tuple[str, ...] = Field(min_length=1)
     new_entries: bool
     size_mult: Decimal | None
@@ -61,6 +62,8 @@ class RegimeDecision(_Strict):
             raise ValueError("an unclassified session has no discovery policy")
         if self.regime == "RISK_OFF" and self.new_entries:
             raise ValueError("RISK_OFF produces no BUY")
+        if self.regime is not None and self.raw is None:
+            raise ValueError("a published regime has a raw state")
         if self.regime is not None and self.regime.lower() not in self.reason_codes:
             raise ValueError("a published regime carries its reason")
         return self
@@ -90,22 +93,24 @@ def classify(
         reasons.append("invalid_btc_price")
     breadth = _breadth(universe_bars, as_of, reasons)
     if reasons:
-        return _unclassified(tuple(reasons))
+        return _unclassified(tuple(reasons), raw=None)
+    above_sma, below_sma = _sma_side(cast(tuple[DailyBar, ...], sma_window))
     raw = _raw_regime(
-        _above_sma(cast(tuple[DailyBar, ...], sma_window)),
+        above_sma,
+        below_sma,
         cast(Decimal, breadth),
         _drawdown(cast(tuple[DailyBar, ...], draw_window)),
         hypotheses,
     )
     if raw is None:
-        return _unclassified(("regime_unclassified",))
+        return _unclassified(("regime_unclassified",), raw=None)
     published = _publish(raw, as_of, prior, hypotheses)
     if published is None:
-        return _unclassified(("hysteresis",))
+        return _unclassified(("hysteresis",), raw=raw)
     codes = [published.lower()]
     if published != raw:
         codes.append("hysteresis")
-    return _from_policy(published, tuple(codes), hypotheses)
+    return _from_policy(published, raw, tuple(codes), hypotheses)
 
 
 def _observation_reasons(observations: Sequence[Observation], as_of: date) -> list[str]:
@@ -206,10 +211,11 @@ def _ema(closes: tuple[Decimal, ...], period: int) -> Decimal:
     return ema
 
 
-def _above_sma(window: tuple[DailyBar, ...]) -> bool:
+def _sma_side(window: tuple[DailyBar, ...]) -> tuple[bool, bool]:
     closes = tuple(bar.close for bar in window)
     average = sum(closes, Decimal(0)) / Decimal(len(closes))
-    return window[-1].close > average
+    close = window[-1].close
+    return close > average, close < average
 
 
 def _drawdown(window: tuple[DailyBar, ...]) -> Decimal:
@@ -228,6 +234,7 @@ def _non_positive(window: tuple[DailyBar, ...] | None) -> bool:
 
 def _raw_regime(
     above_sma: bool,
+    below_sma: bool,
     breadth: Decimal,
     drawdown: Decimal,
     hypotheses: RegimeHypotheses,
@@ -235,7 +242,7 @@ def _raw_regime(
     if drawdown > Decimal(str(hypotheses.btc_drawdown_90d_risk_off)):
         return "RISK_OFF"
     wide = breadth >= Decimal(str(hypotheses.breadth_risk_on))
-    if not above_sma and breadth < Decimal(str(hypotheses.breadth_risk_off)):
+    if below_sma and breadth < Decimal(str(hypotheses.breadth_risk_off)):
         return "RISK_OFF"
     if above_sma and wide:
         return "RISK_ON"
@@ -283,6 +290,7 @@ def _prior_sessions(prior: Sequence[PriorSession], as_of: date) -> None:
 
 def _from_policy(
     regime: RegimeName,
+    raw: RegimeName,
     reason_codes: tuple[str, ...],
     hypotheses: RegimeHypotheses,
 ) -> RegimeDecision:
@@ -293,6 +301,7 @@ def _from_policy(
     }[regime]
     return RegimeDecision(
         regime=regime,
+        raw=raw,
         reason_codes=reason_codes,
         new_entries=state.new_entries,
         size_mult=None if state.size_mult is None else Decimal(str(state.size_mult)),
@@ -304,9 +313,10 @@ def _from_policy(
     )
 
 
-def _unclassified(reason_codes: tuple[str, ...]) -> RegimeDecision:
+def _unclassified(reason_codes: tuple[str, ...], *, raw: RegimeName | None) -> RegimeDecision:
     return RegimeDecision(
         regime=None,
+        raw=raw,
         reason_codes=reason_codes,
         new_entries=False,
         size_mult=None,
