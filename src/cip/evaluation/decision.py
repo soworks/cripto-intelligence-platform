@@ -6,14 +6,33 @@ import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 SCHEMA_VERSION: Literal[1] = 1
+_DECISION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "cohort",
+        "symbol",
+        "evaluated_at",
+        "policy_version",
+        "git_sha",
+        "disposition",
+        "reason_codes",
+        "features",
+        "score",
+        "score_components",
+        "rank",
+        "regime",
+        "sources",
+    }
+)
+_SOURCE_FIELDS = frozenset({"name", "observed_at", "provenance"})
 
 
 class Cohort(StrEnum):
@@ -50,11 +69,51 @@ def _decimal_string(value: object) -> Decimal:
 def _decimal_map(value: object) -> dict[str, Decimal]:
     if not isinstance(value, dict):
         raise ValueError("decimal maps are objects")
-    return {str(key): _decimal_string(item) for key, item in value.items()}
+    parsed: dict[str, Decimal] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("decimal map keys are strings")
+        parsed[key] = _decimal_string(item)
+    return parsed
+
+
+def _finite_decimal(value: object) -> Decimal:
+    if isinstance(value, (bool, float, int)):
+        raise ValueError("decimal values are Decimal or decimal strings")
+    if isinstance(value, str):
+        return _decimal_string(value)
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("decimal values are finite")
+        return value
+    raise ValueError("decimal values are Decimal or decimal strings")
+
+
+def _optional_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    return _finite_decimal(value)
+
+
+def _decimal_values(value: object) -> dict[str, Decimal]:
+    if not isinstance(value, dict):
+        raise ValueError("decimal maps are objects")
+    parsed: dict[str, Decimal] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("decimal map keys are strings")
+        parsed[key] = _finite_decimal(item)
+    return parsed
+
+
+def _optional_decimal_values(value: object) -> dict[str, Decimal] | None:
+    if value is None:
+        return None
+    return _decimal_values(value)
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class SourceStamp(_Strict):
@@ -79,9 +138,11 @@ class DecisionRecord(_Strict):
     git_sha: str
     disposition: Disposition
     reason_codes: tuple[str, ...] = Field(min_length=1)
-    features: dict[str, Decimal]
-    score: Decimal | None
-    score_components: dict[str, Decimal] | None
+    features: Annotated[dict[str, Decimal], BeforeValidator(_decimal_values)]
+    score: Annotated[Decimal | None, BeforeValidator(_optional_decimal)]
+    score_components: Annotated[
+        dict[str, Decimal] | None, BeforeValidator(_optional_decimal_values)
+    ]
     rank: int | None = Field(default=None, ge=1)
     regime: Literal["RISK_ON", "NEUTRAL", "RISK_OFF"] | None
     sources: tuple[SourceStamp, ...] = Field(min_length=1)
@@ -161,7 +222,13 @@ class DecisionRecord(_Strict):
 
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> Self:
+        if set(document) != _DECISION_FIELDS:
+            raise ValueError("decision document keys are fixed")
         sources = document["sources"]
+        if not isinstance(sources, list) or any(
+            not isinstance(item, dict) or set(item) != _SOURCE_FIELDS for item in sources
+        ):
+            raise ValueError("decision document keys are fixed")
         components = document["score_components"]
         return cls(
             schema_version=document["schema_version"],
@@ -194,12 +261,12 @@ class ForwardOutcome(_Strict):
     schema_version: Literal[1] = SCHEMA_VERSION
     decision_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     horizon_days: Literal[7, 14, 30, 60]
-    absolute_return: Decimal
-    btc_return: Decimal
-    excess_return: Decimal
-    universe_relative_return: Decimal | None
-    mfe: Decimal
-    mae: Decimal
+    absolute_return: Annotated[Decimal, BeforeValidator(_finite_decimal)]
+    btc_return: Annotated[Decimal, BeforeValidator(_finite_decimal)]
+    excess_return: Annotated[Decimal, BeforeValidator(_finite_decimal)]
+    universe_relative_return: Annotated[Decimal | None, BeforeValidator(_optional_decimal)]
+    mfe: Annotated[Decimal, BeforeValidator(_finite_decimal)]
+    mae: Annotated[Decimal, BeforeValidator(_finite_decimal)]
     price_timestamp: datetime
     btc_price_timestamp: datetime
 

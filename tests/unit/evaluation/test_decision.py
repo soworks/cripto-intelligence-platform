@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -15,7 +16,7 @@ from cip.evaluation.decision import (
     SourceStamp,
     decision_id,
 )
-from cip.evaluation.store import append_decision, append_outcome
+from cip.evaluation.store import _require_inside, append_decision, append_outcome
 
 SHA = "a" * 40
 NOW = datetime(2026, 10, 4, tzinfo=UTC)
@@ -273,3 +274,117 @@ def test_an_outcome_cannot_invent_excess_return_or_a_missing_decision(tmp_path: 
     )
     with pytest.raises(EvaluationError, match="decision"):
         append_outcome(tmp_path, outcome, as_of=NOW + timedelta(days=30))
+
+
+def test_a_float_cannot_be_frozen_as_a_decision_or_an_outcome() -> None:
+    with pytest.raises(ValidationError):
+        _buy(score=0.1 + 0.2)
+    with pytest.raises(ValidationError):
+        _buy(features={"rs_30d": 0.1 + 0.2})
+    with pytest.raises(ValidationError):
+        _buy(score=True)
+    with pytest.raises(ValidationError):
+        ForwardOutcome(
+            decision_id="e" * 64,
+            horizon_days=7,
+            absolute_return=0.1 + 0.2,
+            btc_return=Decimal("0"),
+            excess_return=Decimal("0"),
+            universe_relative_return=None,
+            mfe=Decimal("0"),
+            mae=Decimal("0"),
+            price_timestamp=NOW,
+            btc_price_timestamp=NOW,
+        )
+    record = _buy(score="80")
+    assert record.score == Decimal("80")
+
+
+def test_a_rewritten_or_duplicated_decision_cannot_open_an_outcome(tmp_path: Path) -> None:
+    record = _buy()
+    append_decision(tmp_path, record)
+    path = next((tmp_path / "decisions").rglob("*.json"))
+    original = path.read_bytes()
+    document = json.loads(original)
+    document["evaluated_at"] = "2020-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(document))
+    outcome = ForwardOutcome(
+        decision_id=decision_id(record),
+        horizon_days=60,
+        absolute_return=Decimal("0"),
+        btc_return=Decimal("0"),
+        excess_return=Decimal("0"),
+        universe_relative_return=None,
+        mfe=Decimal("0"),
+        mae=Decimal("0"),
+        price_timestamp=NOW + timedelta(days=60),
+        btc_price_timestamp=NOW + timedelta(days=60),
+    )
+    with pytest.raises(EvaluationError, match="match its id"):
+        append_outcome(tmp_path, outcome, as_of=NOW + timedelta(days=1))
+    assert list((tmp_path / "decision-outcomes").rglob("*.json")) == []
+    assert path.read_bytes() != original
+
+    path.write_bytes(original)
+    duplicate = path.parent.parent.parent / "date=2020-01-01" / "symbol=SOLUSDT" / path.name
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_bytes(original)
+    with pytest.raises(EvaluationError, match="ambiguous"):
+        append_outcome(tmp_path, outcome, as_of=NOW + timedelta(days=60))
+    assert list((tmp_path / "decision-outcomes").rglob("*.json")) == []
+
+    duplicate.unlink()
+    path.write_text("{")
+    with pytest.raises(EvaluationError, match="unusable"):
+        append_outcome(tmp_path, outcome, as_of=NOW + timedelta(days=60))
+    assert list((tmp_path / "decision-outcomes").rglob("*.json")) == []
+
+
+def test_a_decision_document_with_an_order_field_is_refused() -> None:
+    document = _buy().to_document()
+    document["order_id"] = "1"
+    with pytest.raises(ValueError, match="keys"):
+        DecisionRecord.from_document(document)
+    document = _buy().to_document()
+    document["sources"] = "klines"
+    with pytest.raises(ValueError, match="keys"):
+        DecisionRecord.from_document(document)
+    document = _buy().to_document()
+    document["sources"] = [{"name": "klines"}]
+    with pytest.raises(ValueError, match="keys"):
+        DecisionRecord.from_document(document)
+    document = _buy().to_document()
+    document["features"] = {1: "0.10"}
+    with pytest.raises(ValueError, match="strings"):
+        DecisionRecord.from_document(document)
+
+
+def test_non_decimal_evidence_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _buy(score=object())
+    with pytest.raises(ValidationError):
+        _buy(features=[])
+    with pytest.raises(ValidationError):
+        _buy(features={1: Decimal("0.10")})
+
+
+def test_a_decision_path_cannot_leave_the_store(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.json"
+    with pytest.raises(EvaluationError, match="escapes"):
+        _require_inside(tmp_path / "decisions", outside)
+
+
+def test_a_lost_create_keeps_the_first_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _buy()
+    real_link = os.link
+
+    def lose_the_race(source: str, destination: str) -> None:
+        real_link(source, destination)
+        raise FileExistsError
+
+    monkeypatch.setattr(os, "link", lose_the_race)
+    assert append_decision(tmp_path, record) is False
+    stored = next((tmp_path / "decisions").rglob("*.json"))
+    assert json.loads(stored.read_text())["score"] == "80"
