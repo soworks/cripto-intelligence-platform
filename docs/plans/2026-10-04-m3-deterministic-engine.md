@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slice 1 is merged. Slice 2 is eligibility and exclusions. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1 and 2 are merged. Slice 3 is liquidity and manipulation. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -11,7 +11,7 @@ Each slice is one implementation issue. Later slices call the replay contracts i
 
 1. **Decision records.** Immutable point-in-time decision, plus a separate forward-outcome document. This slice.
 2. **Eligibility and exclusions.** Normal and high-risk lanes, exclusion list, reason codes. No BUY when a required input is missing. This slice.
-3. **Liquidity, manipulation, and the new-listing lane.** 30-day medians, spread and depth, manipulation block. Listing age is the lane `minimum_history_days` already applied in slice 2; this slice must call that assessment instead of copying it. A listing does not create a BUY.
+3. **Liquidity, manipulation, and the new-listing lane.** 30-day medians, spread and depth, manipulation block. Listing age is the lane `minimum_history_days` already applied in slice 2; this slice calls that assessment instead of copying it. A listing does not create a BUY. This slice.
 4. **Fundamentals.** CoinGecko primary, CMC cross-check, DefiLlama. Missing data is a rejection, not a filled value.
 5. **Regime.** Hysteresis and the per-regime discovery policy already in `hypotheses`. RISK_OFF produces no BUY.
 6. **Features, score v2, and the information-coefficient study.** Weights freeze in policy after the study. Liquidity and portfolio fit stay out of the score.
@@ -48,6 +48,10 @@ The outcome write loads the one decision file, rebuilds the record, and refuses 
 Exclusions are the stablecoin and wrapped base-asset lists, plus EUR-stable, fan-token, non-TRADING, monitoring, delisting, suspended deposits, suspended withdrawals, and pending migration. A missing flag is a rejection. The market-cap boundary belongs to the normal lane: a cap equal to the shared floor is normal, and a cap below it but at least the high-risk floor is high-risk.
 
 Normal-lane gates in this slice are rank, circulating ratio, FDV to market cap, and history. High-risk gates are circulating ratio, known unlock schedule, and history. Spread, depth, volume, and turnover stay in slice 3. Listing age is `minimum_history_days`. If `new_listing` disagrees with that gate, assessment raises and records nothing.
+
+## Slice 3 liquidity and manipulation
+
+`assess_market` calls `assess` and then applies the lane's volume, spread, depth, and turnover gates. It does not recompute listing age. A symbol with no lane skips these gates. Any wash, spike, trade-size, taker-buy, Binance-share, stablecoin-peg, or active escalation-block heuristic adds a reason and still does not create a BUY. Open interest and funding stay out until the policy has thresholds for them.
 
 ## Out of this milestone
 
