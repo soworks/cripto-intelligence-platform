@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import ValidationError
 
@@ -11,20 +14,81 @@ from cip.domain.errors import EvaluationError
 from cip.evaluation.decision import DecisionRecord, ForwardOutcome, decision_id
 
 
+class ObjectStore(Protocol):
+    def read(self, key: str) -> bytes | None: ...
+
+    def create(self, key: str, body: bytes) -> bool: ...
+
+
+@dataclass(frozen=True)
+class StoredDecision:
+    """One stored decision object. ``sha256`` is the hash of the stored bytes."""
+
+    key: str
+    sha256: str
+    created: bool
+    record: DecisionRecord
+
+
+class DecisionWriter(Protocol):
+    def write(self, record: DecisionRecord) -> StoredDecision: ...
+
+
+def decision_key(record: DecisionRecord) -> str:
+    """S3 and local layout for one decision. The date is the UTC close date."""
+    day = record.evaluated_at.astimezone(UTC).date().isoformat()
+    identity = decision_id(record)
+    return (
+        f"decisions/cohort={record.cohort.value}/date={day}/symbol={record.symbol}/{identity}.json"
+    )
+
+
 def append_decision(root: Path, record: DecisionRecord) -> bool:
     """Write the decision once. The same document is a no-op. A different document is refused."""
-    identity = decision_id(record)
-    day = record.evaluated_at.astimezone(UTC).date().isoformat()
-    path = (
-        root
-        / "decisions"
-        / f"cohort={record.cohort.value}"
-        / f"date={day}"
-        / f"symbol={record.symbol}"
-        / f"{identity}.json"
-    )
+    path = root / decision_key(record)
     _require_inside(root / "decisions", path)
     return _create(path, _body(record.to_document()))
+
+
+class FileDecisionWriter:
+    """Write decisions under ``root`` with the same key the object store uses."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def write(self, record: DecisionRecord) -> StoredDecision:
+        created = append_decision(self._root, record)
+        key = decision_key(record)
+        body = (self._root / key).read_bytes()
+        return StoredDecision(key, hashlib.sha256(body).hexdigest(), created, record)
+
+
+def append_decision_to(store: ObjectStore, record: DecisionRecord) -> StoredDecision:
+    """Create the object once. The same bytes are a no-op. Different bytes are refused."""
+    key = decision_key(record)
+    body = _body(record.to_document())
+    digest = hashlib.sha256(body).hexdigest()
+    existing = store.read(key)
+    if existing is None:
+        if store.create(key, body):
+            return StoredDecision(key, digest, True, record)
+        existing = store.read(key)
+    if existing == body:
+        return StoredDecision(key, digest, False, record)
+    name = key.rsplit("/", 1)[-1]
+    if existing is None:
+        raise EvaluationError(f"record {name} disappeared before it could be stored")
+    raise EvaluationError(f"record {name} already exists with a different payload")
+
+
+class ObjectDecisionWriter:
+    """Write decisions through an object store. S3 uses this with ``IfNoneMatch``."""
+
+    def __init__(self, store: ObjectStore) -> None:
+        self._store = store
+
+    def write(self, record: DecisionRecord) -> StoredDecision:
+        return append_decision_to(self._store, record)
 
 
 def append_outcome(root: Path, outcome: ForwardOutcome, *, as_of: datetime) -> bool:
