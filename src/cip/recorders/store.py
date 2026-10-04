@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Protocol
+
+from botocore.exceptions import ClientError
 
 from cip.domain.errors import RecorderError
 from cip.recorders.observation import (
@@ -16,11 +19,59 @@ from cip.recorders.observation import (
 )
 
 
+class ObjectStore(Protocol):
+    def read(self, key: str) -> bytes | None: ...
+
+    def write(self, key: str, body: bytes) -> None: ...
+
+
+class DirectoryStore:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def read(self, key: str) -> bytes | None:
+        path = self._root / key
+        if not path.exists():
+            return None
+        return path.read_bytes()
+
+    def write(self, key: str, body: bytes) -> None:
+        path = self._root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.tmp")
+        temporary.write_bytes(body)
+        temporary.replace(path)
+
+
+class S3Store:
+    def __init__(self, client: Any, bucket: str) -> None:
+        self.client = client
+        self.bucket = bucket
+
+    def read(self, key: str) -> bytes | None:
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            if code in {"NoSuchKey", "404", "NotFound"}:
+                return None
+            raise
+        body: bytes = response["Body"].read()
+        return body
+
+    def write(self, key: str, body: bytes) -> None:
+        self.client.put_object(Bucket=self.bucket, Key=key, Body=body)
+
+
 def append_observation(root: Path, observation: Observation) -> bool:
     """Write the observation once. The same payload is a no-op. A different payload is refused."""
+    return append_observation_to(DirectoryStore(root), observation)
+
+
+def append_observation_to(store: ObjectStore, observation: Observation) -> bool:
     return _append(
-        _path(
-            root,
+        store,
+        object_key(
             "observations",
             observation.family,
             observation.series,
@@ -32,9 +83,13 @@ def append_observation(root: Path, observation: Observation) -> bool:
 
 
 def append_failure(root: Path, failure: CollectionFailure) -> bool:
+    return append_failure_to(DirectoryStore(root), failure)
+
+
+def append_failure_to(store: ObjectStore, failure: CollectionFailure) -> bool:
     return _append(
-        _path(
-            root,
+        store,
+        object_key(
             "observation-failures",
             family_of(failure.series),
             failure.series,
@@ -45,28 +100,19 @@ def append_failure(root: Path, failure: CollectionFailure) -> bool:
     )
 
 
-def _path(root: Path, kind: str, family: str, series: str, moment: datetime, identity: str) -> Path:
+def object_key(kind: str, family: str, series: str, moment: datetime, identity: str) -> str:
     day = moment.astimezone(UTC).date()
-    return (
-        root
-        / kind
-        / f"family={family}"
-        / f"series={series}"
-        / f"date={day.isoformat()}"
-        / f"{identity}.json"
-    )
+    return f"{kind}/family={family}/series={series}/date={day.isoformat()}/{identity}.json"
 
 
-def _append(path: Path, body: bytes) -> bool:
-    if path.exists():
-        current = path.read_bytes()
+def _append(store: ObjectStore, key: str, body: bytes) -> bool:
+    current = store.read(key)
+    if current is not None:
         if current == body or _same_point(current, body):
             return False
-        raise RecorderError(f"observation {path.name} already exists with a different payload")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_bytes(body)
-    temporary.replace(path)
+        name = key.rsplit("/", 1)[-1]
+        raise RecorderError(f"observation {name} already exists with a different payload")
+    store.write(key, body)
     return True
 
 

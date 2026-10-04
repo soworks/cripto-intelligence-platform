@@ -74,6 +74,10 @@ strategy:
   kill_after_closed_trades: 40
   kill_after_months: 6
 
+# Measurement config for the forward recorders. 200 bps is ±2% of mid.
+recorders:
+  depth_band_bps: 200
+
 # Hypothesis values from the gap analysis. The universe and risk sections above
 # stay the Phase 1 placeholders. These blocks do not replace them.
 hypotheses:

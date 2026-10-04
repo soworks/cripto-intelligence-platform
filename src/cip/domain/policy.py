@@ -492,6 +492,16 @@ class ApprovalHypotheses(_Strict):
         return self
 
 
+class RecorderPolicy(_Strict):
+    """How a recorder measures a book. This is not a trade hypothesis."""
+
+    depth_band_bps: Annotated[int, _exact_type(int), Field(ge=1, le=10_000)]
+
+    @property
+    def depth_band(self) -> Decimal:
+        return Decimal(self.depth_band_bps) / Decimal(10_000)
+
+
 class Hypotheses(_Strict):
     universe: UniverseHypotheses
     fundamentals: FundamentalsHypotheses
@@ -516,6 +526,7 @@ class InvestmentPolicy(_Strict):
     tax: TaxPolicy
     data: DataPolicy
     strategy: StrategyPolicy
+    recorders: RecorderPolicy
     hypotheses: Hypotheses
 
     @model_validator(mode="after")

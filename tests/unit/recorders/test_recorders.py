@@ -73,7 +73,9 @@ def test_parsers_keep_source_time_and_units() -> None:
         observed_at=NOW,
         symbol="BTCUSDT",
     )
-    spread, depth = book_observations("BTCUSDT", _book(), observed_at=NOW)
+    spread, depth = book_observations(
+        "BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal("0.02")
+    )
 
     assert dominance.family == "market_regime"
     assert dominance.source_timestamp == datetime.fromtimestamp(1_759_000_000, tz=UTC)
@@ -86,6 +88,13 @@ def test_parsers_keep_source_time_and_units() -> None:
     assert spread.family == "execution_liquidity"
     assert dict(spread.values)["spread_bps"] > 0
     assert dict(depth.values) == {"bid_usd": Decimal("200"), "ask_usd": Decimal("102")}
+
+
+def test_depth_band_comes_from_the_caller() -> None:
+    _spread, depth = book_observations(
+        "BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal("0.005")
+    )
+    assert dict(depth.values) == {"bid_usd": Decimal(0), "ask_usd": Decimal(0)}
 
 
 @pytest.mark.parametrize(
@@ -129,7 +138,10 @@ def test_parsers_keep_source_time_and_units() -> None:
             observed_at=NOW,
             symbol="BTCUSDT",
         ),
-        lambda: book_observations("BTCUSDT", Depth(1, (), ()), observed_at=NOW),
+        lambda: book_observations(
+            "BTCUSDT", Depth(1, (), ()), observed_at=NOW, depth_band=Decimal("0.02")
+        ),
+        lambda: book_observations("BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal(0)),
         lambda: book_observations(
             "BTCUSDT",
             Depth(
@@ -138,6 +150,7 @@ def test_parsers_keep_source_time_and_units() -> None:
                 (DepthLevel(Decimal("9"), Decimal("1")),),
             ),
             observed_at=NOW,
+            depth_band=Decimal("0.02"),
         ),
     ],
 )
@@ -236,7 +249,9 @@ def test_one_provider_failure_does_not_drop_another(tmp_path: Path) -> None:
             symbol="BTCUSDT",
         ),
         open_interest=lambda _symbol: (_ for _ in ()).throw(ExchangeGeoBlockedError("451")),
-        book=lambda _symbol: book_observations("BTCUSDT", _book(), observed_at=NOW),
+        book=lambda _symbol: book_observations(
+            "BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal("0.02")
+        ),
     )
     persist(tmp_path, result)
 
@@ -350,7 +365,7 @@ def test_observation_shape_is_rejected() -> None:
             observed_at=NOW,
             symbol="BTCUSDT",
         )
-    book = book_observations("BTCUSDT", _book(), observed_at=NOW)[0]
+    book = book_observations("BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal("0.02"))[0]
     assert book.identity_time == NOW
 
 
@@ -418,6 +433,7 @@ def test_live_collect_appends_each_family(tmp_path: Path) -> None:
             spot=Spot(),
             public=public,
             futures=futures,
+            depth_band=Decimal("0.02"),
         )
     persist(tmp_path, result)
     families = {item.family for item in result.observations}
@@ -567,7 +583,9 @@ def test_a_ban_from_one_series_stops_the_collection() -> None:
             stablecoins=_supply,
             funding=funding,
             open_interest=lambda _symbol: _supply(),
-            book=lambda _symbol: book_observations("BTCUSDT", _book(), observed_at=NOW),
+            book=lambda _symbol: book_observations(
+                "BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal("0.02")
+            ),
         )
 
 

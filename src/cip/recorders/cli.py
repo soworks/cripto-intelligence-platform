@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
                 spot=spot,
                 public=public,
                 futures=futures,
+                depth_band=policy.policy.recorders.depth_band,
             )
         persist(args.output, result)
     except (RecorderError, PolicyError, MarketDataError, OSError) as error:
