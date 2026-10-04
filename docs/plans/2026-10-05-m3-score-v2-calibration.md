@@ -11,8 +11,8 @@ M3 code is complete. Weights stay unfrozen until this sequence finishes, in this
 
 1. **M3 CODE COMPLETE.** Slices 1–9 are implemented.
 2. **C1 Prospective Data Collection.** Starts immediately. Universe snapshots, daily bars, regime inputs, tokenomics as-of snapshots, features, and immutable decisions.
-3. **C2 Data Maturation.** Forward outcomes at 7, 14, 30, and 60 days.
-4. **C3 Calibration Readiness Gate.** Sufficient observations, regime coverage, feature completeness, no leakage, and pilot exclusion.
+3. **C2 Data Maturation.** Forward outcomes at 7, 14, 30, and 60 days. One of those horizons is the primary IC target. Which one is unresolved.
+4. **C3 Calibration Readiness Gate.** Sufficient observations, regime coverage, candidate-feature evidence, no leakage, and pilot exclusion. Overall readiness stays `NOT_READY_METHODOLOGY_UNDEFINED` until the primary horizon and the session and asset floors are set.
 5. **C4 IC Study.** Feature information coefficients by regime, stability, sample sizes, and candidate weights.
 6. **C5 Weight Selection / Freeze.** `investment-policy` vNext, only after review.
 7. **C6 Out-of-Sample Validation.** Replay without retuning.
@@ -26,8 +26,8 @@ Recorded on #21 and here. None of these are done.
 | Checkpoint | Meaning | State |
 |---|---|---|
 | C1 Capture operational | Prospective point-in-time capture is running | Not done. C1 has not been built. |
-| C2 Outcomes maturing | 7/14/30/60-day outcomes are accruing on those captures | Not done. |
-| C3 Calibration ready | Every required cell passes the readiness gate | Not done. |
+| C2 Outcomes maturing | 7/14/30/60-day outcomes are accruing on those captures | Not done. The primary horizon is unresolved. |
+| C3 Calibration ready | Candidate features with trustworthy evidence pass the gate. Overall status is `NOT_READY_METHODOLOGY_UNDEFINED` until the methodology exists | Not done. |
 | C4 IC study complete | Frozen dataset, documented ICs, weight proposal | Not done. |
 | C5 Weights frozen | Reviewed weights in `investment-policy` vNext | Not done. |
 | C6 Holdout validated | Out-of-sample replay with no retune | Not done. |
@@ -61,7 +61,8 @@ The original observation is immutable. Maturation adds separate outcome records,
 Each calibration observation connects:
 
 - session
-- cohort or research-set id
+- cohort, one of `BACKTEST`, `ALPHA_PILOT_2026_10`, `SHADOW`, `LIVE`
+- `research_set_id`, a calibration identity separate from that cohort, conceptually `SCORE_V2_CAL_001` for the first Score v2 set
 - symbol
 - `published_regime`
 - `raw_regime`
@@ -93,9 +94,9 @@ The denominator is not a raw row count. The monitor distinguishes collected, mat
 - excluded because provenance is missing
 - calibration eligible
 - required: 30
-- status: not ready until eligible is at least required, and the independent-session and asset-diversity floors are met, once those floors exist
+- status: not ready until the primary horizon has matured, eligible is at least 30, and the independent-session and asset-diversity floors are met
 
-Until the floors exist, a cell that reaches 30 eligible observations is still not ready.
+The monitor may report collection and maturation counts before the methodology exists. Overall calibration readiness is `NOT_READY_METHODOLOGY_UNDEFINED` until the primary horizon, X, and Y are set. A cell that reaches 30 eligible observations is still not an authoritative ready state while that status holds.
 
 ## Weighted features
 
@@ -113,7 +114,9 @@ Exactly these eleven. The monitor reports each one in each regime:
 - `unlock_pct_14d`
 - `unlock_pct_90d`
 
-A weak feature may receive no weight. Presence in this list does not force a feature into Score v2.
+These eleven are candidate features. C3 does not require every one of them to be ready before C4. C4 evaluates a feature only when that feature's regime cell meets the statistical requirements. A feature that lacks sufficient trustworthy evidence is `INSUFFICIENT_EVIDENCE`. It is not assigned a zero information coefficient. Missing evidence is not evidence of no predictive value.
+
+Weight selection may then exclude that feature, and the exclusion is written down. A weak feature that was actually studied may receive no weight. Presence in this list does not force a feature into Score v2.
 
 ## Statistical unit
 
@@ -127,7 +130,7 @@ Readiness will require all three:
 - N independent sessions ≥ X
 - N distinct assets ≥ Y
 
-X and Y are unknown today. This plan does not set them. The IC methodology must set them before C4. Until that methodology exists, `INSUFFICIENT_SESSIONS` and `INSUFFICIENT_ASSET_DIVERSITY` have no numeric floor, and the readiness status stays not ready.
+X and Y are unknown today. This plan does not set them. The IC methodology must set X and Y before C3 can evaluate readiness. Until then the monitor may report collection and maturation counts, but it must report overall calibration readiness as `NOT_READY_METHODOLOGY_UNDEFINED`. Setting the floors at C4 would be too late: a large row count would look like progress without a definition of temporal or asset diversity.
 
 ## Pilot isolation
 
@@ -154,27 +157,45 @@ Exact names:
 - `PILOT_WINDOW_OVERLAP`
 - `STALE_SOURCE`
 - `PROVENANCE_INCOMPLETE`
+- `INSUFFICIENT_EVIDENCE`
+
+`NOT_READY_METHODOLOGY_UNDEFINED` is the overall readiness status while the primary horizon, X, or Y is unset. It is not a per-feature coefficient.
+
+## Primary outcome horizon
+
+C2 accumulates forward outcomes at 7, 14, 30, and 60 days. The readiness monitor reports all four horizons. The information coefficient that calibrates a feature uses one primary forward excess-return horizon. The other horizons are diagnostic robustness measures. They do not independently block C3 unless a later methodology statement says they do.
+
+The primary horizon is unresolved. This document does not choose it. The IC methodology must name it before C3 can evaluate readiness. Until it is named, overall calibration readiness is `NOT_READY_METHODOLOGY_UNDEFINED`.
+
+## Research-set identity
+
+Cohort and research set are different fields. Cohort stays one of `BACKTEST`, `ALPHA_PILOT_2026_10`, `SHADOW`, and `LIVE`. It is the runtime evaluation label. It is not the calibration dataset.
+
+`research_set_id` names the calibration set. The first Score v2 set is conceptually `SCORE_V2_CAL_001`. A decision can belong to that research set without the research set becoming an execution cohort. For example, `cohort = BACKTEST` and `research_set_id = SCORE_V2_CAL_001`.
 
 ## C3 — Calibration readiness gate
 
-A cell is ready only when every check below holds:
+Overall readiness stays `NOT_READY_METHODOLOGY_UNDEFINED` until the primary horizon, X, and Y are set. The monitor may still report collection and maturation counts.
 
+A candidate-feature cell can be evaluated only when every check below holds:
+
+- the primary excess-return horizon, once named, has matured for that observation
 - calibration-eligible observations are at least 30
-- independent sessions meet X, after the IC methodology has set X
-- distinct assets meet Y, after the IC methodology has set Y
+- independent sessions meet X
+- distinct assets meet Y
 - regime coverage includes the regime being reported (`RISK_ON`, `NEUTRAL`, `RISK_OFF`)
-- feature completeness: the weighted feature is present with source timestamps and provenance
+- the candidate feature is present with source timestamps and provenance
 - no leakage: values are as-of the decision session, and current tokenomics are not projected backward
 - pilot exclusion: the selector has rejected every overlapping session and forward window
 
-The gate does not choose weights.
+A cell that fails those checks for lack of trustworthy evidence is `INSUFFICIENT_EVIDENCE`. That does not block every other candidate feature, and it does not become a zero coefficient. The gate does not choose weights.
 
 ## C4 — IC study
 
 The IC study is a controlled event, not a continuous retune:
 
 1. calibration dataset freeze
-2. dataset SHA / manifest
+2. dataset manifest and SHA-256
 3. IC study
 4. documented results
 5. weight proposal
@@ -182,11 +203,27 @@ The IC study is a controlled event, not a continuous retune:
 7. `investment-policy` vNext
 8. weights frozen
 
-The study records sample counts, regimes, date range, excluded observations, feature ICs, and stability. Candidate weights come out of that record. They are not written into policy in the same step.
+The frozen manifest contains at least:
+
+- `calibration_dataset_id`
+- `created_at`
+- `git_sha`
+- `policy_version`
+- date and session range
+- decision IDs
+- outcome IDs
+- feature set and version
+- exclusion rules and version
+- pilot exclusion interval
+- X / Y methodology version
+- primary outcome horizon
+- dataset SHA-256
+
+That manifest is what later Score versions cite. The study records sample counts, regimes, date range, excluded observations, feature ICs, and stability. A feature marked `INSUFFICIENT_EVIDENCE` stays out of the coefficient table. Candidate weights come out of the studied record. They are not written into policy in the same step.
 
 ## C5 — Weight selection / freeze
 
-Weights freeze only after review, as `investment-policy` vNext. A feature with a weak or unstable coefficient may receive no weight.
+Weights freeze only after review, as `investment-policy` vNext. A feature with a weak or unstable coefficient may receive no weight. A feature marked `INSUFFICIENT_EVIDENCE` is excluded in the proposal, with that exclusion written down. That exclusion is not a finding that the feature has no predictive value.
 
 Once frozen, the dataset SHA and the study artifact are part of the policy provenance. No policy version is minted until defensible weights exist. `score_weights_not_frozen` remains the expected fail-closed scan state until then. That state is not a scored `RISK_OFF` result and not a ranked `BUY`.
 
