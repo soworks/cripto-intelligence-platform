@@ -17,7 +17,7 @@ from cip.domain.errors import (
 )
 from cip.recorders.cli import main
 from cip.recorders.collect import CollectionResult, collect, collect_live, persist
-from cip.recorders.observation import Observation
+from cip.recorders.observation import CollectionFailure, Observation
 from cip.recorders.sources import (
     book_observations,
     fetch_json,
@@ -237,8 +237,6 @@ def test_append_is_idempotent_and_refuses_a_conflicting_payload(tmp_path: Path) 
 
 
 def test_a_failure_is_not_stored_as_an_observation(tmp_path: Path) -> None:
-    from cip.recorders.observation import CollectionFailure
-
     failure = CollectionFailure(
         series="btc_dominance",
         provider="coingecko",
@@ -515,26 +513,68 @@ def test_a_later_poll_of_the_same_point_keeps_the_first_file(tmp_path: Path) -> 
     assert append_observation(tmp_path, later) is False
     stored = json.loads(next(tmp_path.rglob("*.json")).read_text())
     assert stored["observed_at"] == NOW.isoformat()
+    kept = persist(tmp_path, CollectionResult(observations=(later, supply), failures=()))
+    assert [item.series for item in kept.observations] == ["btc_dominance", "stablecoin_supply"]
+    assert kept.failures == ()
+    dominance = _series_files(tmp_path / "observations", "btc_dominance")
+    assert json.loads(dominance[0].read_text())["observed_at"] == NOW.isoformat()
+    assert _series_files(tmp_path / "observations", "stablecoin_supply")
+
+
+def test_a_revised_source_point_keeps_the_first_file_and_finishes_the_cycle(
+    tmp_path: Path,
+) -> None:
+    first = _supply()
+    assert append_observation(tmp_path, first) is True
+    revised = Observation(
+        series=first.series,
+        provider=first.provider,
+        source_timestamp=first.source_timestamp,
+        observed_at=NOW + timedelta(hours=1),
+        symbol=None,
+        values=(("stablecoin_supply_usd", Decimal("180000000001")),),
+        units=first.units,
+    )
+    stored = persist(
+        tmp_path,
+        CollectionResult(observations=(revised, _dominance()), failures=()),
+    )
+    assert [item.series for item in stored.observations] == ["btc_dominance"]
+    assert [item.series for item in stored.failures] == ["stablecoin_supply"]
+    assert "different payload" in stored.failures[0].error
+    supply_files = _series_files(tmp_path / "observations", "stablecoin_supply")
+    assert len(supply_files) == 1
+    document = json.loads(supply_files[0].read_text())
+    assert document["values"]["stablecoin_supply_usd"] == "180000000000"
+    assert document["observed_at"] == NOW.isoformat()
+    assert _series_files(tmp_path / "observations", "btc_dominance")
+    failure_files = list((tmp_path / "observation-failures").rglob("*.json"))
+    assert len(failure_files) == 1
+    failure = json.loads(failure_files[0].read_text())
+    assert failure["kind"] == "collection_failure"
+    assert failure["series"] == "stablecoin_supply"
+    assert "values" not in failure
+
+
+def test_a_corrupt_failure_file_is_kept_and_reported(tmp_path: Path) -> None:
+    failure = CollectionFailure(
+        series="funding",
+        provider="binance",
+        observed_at=NOW,
+        symbol="BTCUSDT",
+        error="host returned 451",
+    )
+    assert append_failure(tmp_path, failure) is True
+    path = next((tmp_path / "observation-failures").rglob("*.json"))
+    path.write_bytes(b"not-json")
     with pytest.raises(RecorderError, match="different payload"):
-        persist(
-            tmp_path,
-            CollectionResult(
-                observations=(
-                    Observation(
-                        series=first.series,
-                        provider=first.provider,
-                        source_timestamp=first.source_timestamp,
-                        observed_at=later.observed_at,
-                        symbol=None,
-                        values=(("btc_dominance", Decimal("1")),),
-                        units=first.units,
-                    ),
-                    supply,
-                ),
-                failures=(),
-            ),
-        )
-    assert list((tmp_path / "observations").rglob("*stablecoin_supply*"))
+        persist(tmp_path, CollectionResult(observations=(_dominance(),), failures=(failure,)))
+    assert path.read_bytes() == b"not-json"
+    assert _series_files(tmp_path / "observations", "btc_dominance")
+
+
+def _series_files(root: Path, series: str) -> list[Path]:
+    return [path for path in root.rglob("*.json") if f"series={series}" in path.parts]
 
 
 def test_a_spot_error_records_spread_and_depth_and_keeps_the_rest() -> None:

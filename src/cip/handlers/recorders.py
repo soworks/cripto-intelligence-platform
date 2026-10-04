@@ -41,7 +41,7 @@ def record(_event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
             futures=futures,
             depth_band=policy.policy.recorders.depth_band,
         )
-    persist_to(S3Store(boto3.client("s3"), os.environ["DATA_BUCKET"]), result)
+    stored = persist_to(S3Store(boto3.client("s3"), os.environ["DATA_BUCKET"]), result)
     observation_keys = [
         object_key(
             "observations",
@@ -50,7 +50,7 @@ def record(_event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
             item.identity_time,
             observation_id(item),
         )
-        for item in result.observations
+        for item in stored.observations
     ]
     failure_keys = [
         object_key(
@@ -60,7 +60,7 @@ def record(_event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
             item.observed_at,
             failure_id(item),
         )
-        for item in result.failures
+        for item in stored.failures
     ]
     logger.info("recorder cycle stored")
     return {
