@@ -74,6 +74,10 @@ jobs:
         env:
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
         run: |
+          if [ -z "${TF_VAR_alert_email}" ]; then
+            echo "error: ALERT_EMAIL is empty" >&2
+            exit 1
+          fi
           terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
           terraform apply -input=false -auto-approve
       - id: outputs

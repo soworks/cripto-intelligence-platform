@@ -4,9 +4,14 @@ variable "region" {
 }
 
 variable "alert_email" {
-  description = "Alert recipient. Set with TF_VAR_alert_email or an untracked tfvars file."
+  description = "Alert recipient. Set with TF_VAR_alert_email or an untracked *.auto.tfvars file."
   type        = string
   sensitive   = true
+
+  validation {
+    condition     = can(regex("^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$", var.alert_email))
+    error_message = "alert_email must be one email address. Set TF_VAR_alert_email or an untracked *.auto.tfvars file."
+  }
 }
 
 variable "monthly_budget_usd" {
