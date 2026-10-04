@@ -90,6 +90,14 @@ def test_parsers_keep_source_time_and_units() -> None:
     assert dict(depth.values) == {"bid_usd": Decimal("200"), "ask_usd": Decimal("102")}
 
 
+def test_a_string_source_timestamp_is_accepted() -> None:
+    observation = parse_stablecoin_supply(
+        [{"date": "1759000000", "totalCirculatingUSD": {"peggedUSD": "1"}}],
+        observed_at=NOW,
+    )
+    assert observation.source_timestamp == datetime.fromtimestamp(1_759_000_000, tz=UTC)
+
+
 def test_depth_band_comes_from_the_caller() -> None:
     _spread, depth = book_observations(
         "BTCUSDT", _book(), observed_at=NOW, depth_band=Decimal("0.005")
@@ -135,6 +143,16 @@ def test_depth_band_comes_from_the_caller() -> None:
         ),
         lambda: parse_funding(
             {"symbol": "BTCUSDT", "lastFundingRate": "0.1", "time": "1.5"},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        lambda: parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.1", "time": "nope"},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        lambda: parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.1", "time": None},
             observed_at=NOW,
             symbol="BTCUSDT",
         ),
