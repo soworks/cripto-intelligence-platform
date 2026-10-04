@@ -82,6 +82,7 @@ class _Prepared:
     score: Decimal | None
     components: dict[str, Decimal] | None
     regime: _Regime | None
+    raw_regime: _Regime | None
     sources: tuple[SourceStamp, ...]
 
 
@@ -185,10 +186,10 @@ def _prepare(
         tokenomics=None if candidate is None else candidate.tokenomics,
     ).features
     if candidate is None:
-        return _ineligible(symbol, ("missing_candidate",), features, regime.regime, sources)
+        return _ineligible(symbol, ("missing_candidate",), features, regime, sources)
     market = assess_market(candidate.facts, candidate.market, hypotheses.universe)
     if not market.eligible:
-        return _ineligible(symbol, market.reason_codes, features, regime.regime, sources)
+        return _ineligible(symbol, market.reason_codes, features, regime, sources)
     fundamentals = assess_fundamentals(
         base_asset=candidate.facts.base_asset,
         verified_ids=verified_ids,
@@ -199,14 +200,22 @@ def _prepare(
         hypotheses=hypotheses.fundamentals,
     )
     if not fundamentals.accepted:
-        return _ineligible(symbol, fundamentals.reason_codes, features, regime.regime, sources)
+        return _ineligible(symbol, fundamentals.reason_codes, features, regime, sources)
     if regime.regime is None:
-        return _ineligible(symbol, regime.reason_codes, features, None, sources)
+        return _ineligible(symbol, regime.reason_codes, features, regime, sources)
     disposition, reasons, score, components = _score(features, weights, regime)
     if score is None:
-        return _ineligible(symbol, reasons, features, regime.regime, sources)
+        return _ineligible(symbol, reasons, features, regime, sources)
     return _Prepared(
-        symbol, disposition, reasons, features, score, components, regime.regime, sources
+        symbol,
+        disposition,
+        reasons,
+        features,
+        score,
+        components,
+        regime.regime,
+        regime.raw,
+        sources,
     )
 
 
@@ -248,11 +257,19 @@ def _ineligible(
     symbol: str,
     reason_codes: tuple[str, ...],
     features: dict[str, Decimal],
-    regime: _Regime | None,
+    regime: RegimeDecision,
     sources: tuple[SourceStamp, ...],
 ) -> _Prepared:
     return _Prepared(
-        symbol, Disposition.INELIGIBLE, reason_codes, features, None, None, regime, sources
+        symbol,
+        Disposition.INELIGIBLE,
+        reason_codes,
+        features,
+        None,
+        None,
+        regime.regime,
+        regime.raw,
+        sources,
     )
 
 
@@ -308,6 +325,7 @@ def _record(
         score_components=item.components,
         rank=rank,
         regime=item.regime,
+        raw_regime=item.raw_regime,
         sources=item.sources,
     )
 

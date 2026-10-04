@@ -68,6 +68,7 @@ class _Plan:
     entries: Mapping[date, bool] | None
     exit_rules: ExitRules | None
     run_seeds: tuple[int, ...]
+    listed_on: Mapping[str, date] | None
 
 
 def replay(
@@ -85,8 +86,9 @@ def replay(
     exit_rules: ExitRules | None = None,
     fold_count: int = 1,
     n_runs: int = _RUNS,
+    listed_on: Mapping[str, date] | None = None,
 ) -> ReplayResult:
-    sessions, book = _sessions(bars)
+    sessions, book = _sessions(bars, listed_on)
     plan = _Plan(
         book=book,
         capital=_positive(capital, "capital"),
@@ -97,6 +99,7 @@ def replay(
         entries=entries_allowed,
         exit_rules=exit_rules,
         run_seeds=_run_seeds(_seed(seed), _runs(n_runs)),
+        listed_on=listed_on,
     )
     _check_entries(plan.entries, sessions)
     folds = _split(sessions, fold_count)
@@ -118,6 +121,7 @@ def replay(
 
 def _sessions(
     bars: Mapping[str, Sequence[DailyBar]],
+    listed_on: Mapping[str, date] | None,
 ) -> tuple[tuple[date, ...], dict[str, dict[date, DailyBar]]]:
     sessions: tuple[date, ...] | None = None
     book: dict[str, dict[date, DailyBar]] = {}
@@ -139,11 +143,27 @@ def _sessions(
             previous = bar.open_date
             by_date[bar.open_date] = bar
         dates = tuple(by_date)
-        if sessions is None:
-            sessions = dates
-        elif dates != sessions:
-            raise BacktestError("symbols must share the session dates")
+        if listed_on is None:
+            if sessions is None:
+                sessions = dates
+            elif dates != sessions:
+                raise BacktestError("symbols must share the session dates")
+        else:
+            first = listed_on.get(symbol)
+            if type(first) is not date:
+                raise BacktestError(f"{symbol} is not in the point-in-time universe")
+            if any(day < first for day in dates):
+                raise BacktestError(f"{symbol} has a bar before it existed")
         book[symbol] = by_date
+    if listed_on is not None:
+        if set(listed_on) - set(book):
+            raise BacktestError("listings name a symbol that has no bars")
+        sessions = tuple(sorted({day for dates in book.values() for day in dates}))
+        for symbol, by_date in book.items():
+            first = listed_on[symbol]
+            expected = tuple(day for day in sessions if day >= first)
+            if tuple(by_date) != expected:
+                raise BacktestError(f"{symbol} is missing a session after it existed")
     if sessions is None:
         raise BacktestError("replay needs symbols")
     if len(sessions) < 2:
@@ -160,13 +180,15 @@ def _simulate(
         return _strategy_target(day, symbols, positions, plan), _entries_open(plan.entries, day)
 
     def equal(day: date, _positions: Mapping[str, Decimal]) -> tuple[tuple[str, ...], bool]:
-        return _eligible_names(day, symbols, plan.eligibility), True
+        return _eligible_names(day, symbols, plan.eligibility, plan.listed_on), True
 
     def one_random(run_seed: int) -> BookPath:
         picker = random.Random(run_seed)  # noqa: S311 - seeded baseline, not a secret
 
         def pick(day: date, _positions: Mapping[str, Decimal]) -> tuple[tuple[str, ...], bool]:
-            names = _random_target(day, symbols, plan.eligibility, plan.selection_count, picker)
+            names = _random_target(
+                day, symbols, plan.eligibility, plan.selection_count, picker, plan.listed_on
+            )
             return names, True
 
         return _book(sessions, plan, pick)
@@ -263,7 +285,7 @@ def _strategy_target(
             return held
         return tuple(symbol for symbol in held if not _must_exit(plan.exit_rules, symbol, day))
     ranked = sorted(
-        _eligible_names(day, symbols, plan.eligibility),
+        _eligible_names(day, symbols, plan.eligibility, plan.listed_on),
         key=lambda symbol: (-_score_of(plan.scorer, symbol, day), symbol),
     )
     chosen = tuple(sorted(ranked[: plan.selection_count]))
@@ -274,9 +296,22 @@ def _strategy_target(
 
 
 def _eligible_names(
-    day: date, symbols: tuple[str, ...], eligibility: Eligibility
+    day: date,
+    symbols: tuple[str, ...],
+    eligibility: Eligibility,
+    listed_on: Mapping[str, date] | None,
 ) -> tuple[str, ...]:
-    return tuple(symbol for symbol in symbols if _is_eligible(eligibility, symbol, day))
+    return tuple(
+        symbol
+        for symbol in symbols
+        if _listed(symbol, day, listed_on) and _is_eligible(eligibility, symbol, day)
+    )
+
+
+def _listed(symbol: str, day: date, listed_on: Mapping[str, date] | None) -> bool:
+    if listed_on is None:
+        return True
+    return day >= listed_on[symbol]
 
 
 def _random_target(
@@ -285,8 +320,9 @@ def _random_target(
     eligibility: Eligibility,
     selection_count: int,
     picker: random.Random,
+    listed_on: Mapping[str, date] | None,
 ) -> tuple[str, ...]:
-    eligible = list(_eligible_names(day, symbols, eligibility))
+    eligible = list(_eligible_names(day, symbols, eligibility, listed_on))
     if len(eligible) <= selection_count:
         return tuple(eligible)
     return tuple(sorted(picker.sample(eligible, selection_count)))

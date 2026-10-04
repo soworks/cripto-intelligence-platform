@@ -1,10 +1,12 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from cip.domain.errors import EvaluationError
+from cip.domain.policy import load_policy
 from cip.evaluation.features import PENALTY_FEATURE, FeatureSet, Tokenomics, measure
 from cip.evaluation.score import ScoreResult, combine
 from cip.evaluation.study import MINIMUM_SAMPLE, StudyRow, freeze_weights, information_coefficients
@@ -426,6 +428,15 @@ def test_the_study_reports_rank_correlation_and_does_not_choose_weights() -> Non
         )
     with pytest.raises(EvaluationError, match="cannot freeze"):
         freeze_weights(())
+
+
+def test_the_versioned_policy_does_not_freeze_score_weights() -> None:
+    text = Path("policies/investment-policy.yaml").read_text()
+    assert "score_weights" not in text
+    loaded = load_policy(Path("policies/investment-policy.yaml"))
+    assert loaded.policy.schema_version == 2
+    with pytest.raises(EvaluationError, match="does not choose"):
+        freeze_weights(information_coefficients(_rows(MINIMUM_SAMPLE, reverse=False)))
 
 
 def test_missing_inputs_stay_missing_instead_of_becoming_zero() -> None:

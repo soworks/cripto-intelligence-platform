@@ -41,6 +41,7 @@ def _record(symbol: str = "SOLUSDT", **overrides: object) -> DecisionRecord:
         "score_components": {"tokenomics": Decimal("35")},
         "rank": 1,
         "regime": "RISK_ON",
+        "raw_regime": "RISK_ON",
         "sources": (_source(),),
     }
     values.update(overrides)

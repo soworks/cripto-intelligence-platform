@@ -432,6 +432,54 @@ def test_a_later_session_date_is_the_next_fill_without_requiring_the_next_calend
     assert [point[0] for point in result.strategy.equity] == [_D0, gap]
 
 
+def test_a_symbol_cannot_be_selected_before_it_existed() -> None:
+    days = (_D0, _D1, _D2, _D3)
+    listed = {"AAA": _D0, "NEW": _D2}
+    scores = Scores({"AAA": Decimal("1"), "NEW": Decimal("9")})
+    gate = Gate({"AAA", "NEW"})
+    with pytest.raises(BacktestError, match="before it existed"):
+        _replay(
+            bars=_flat(("AAA", "NEW"), days),
+            listed_on=listed,
+            eligibility=gate,
+            scorer=scores,
+        )
+    result = _replay(
+        bars={
+            "AAA": tuple(_bar("AAA", day, "100") for day in days),
+            "NEW": tuple(_bar("NEW", day, "100") for day in (_D2, _D3)),
+        },
+        listed_on=listed,
+        eligibility=gate,
+        scorer=scores,
+    )
+    assert result.strategy.picks[0][1] == ("AAA",)
+    assert result.strategy.picks[1][1] == ("AAA",)
+    assert result.strategy.picks[2][1] == ("NEW",)
+    with pytest.raises(BacktestError, match="point-in-time"):
+        _replay(
+            bars={
+                "AAA": tuple(_bar("AAA", day, "100") for day in days),
+                "NEW": tuple(_bar("NEW", day, "100") for day in (_D2, _D3)),
+            },
+            listed_on={"AAA": _D0},
+            eligibility=gate,
+            scorer=scores,
+        )
+    with pytest.raises(BacktestError, match="no bars"):
+        _replay(bars=_flat(("AAA",), (_D0, _D1)), listed_on={"AAA": _D0, "NEW": _D0})
+    with pytest.raises(BacktestError, match="missing a session"):
+        _replay(
+            bars={
+                "AAA": tuple(_bar("AAA", day, "100") for day in days),
+                "NEW": (_bar("NEW", _D3, "100"),),
+            },
+            listed_on=listed,
+            eligibility=gate,
+            scorer=scores,
+        )
+
+
 def test_replay_does_not_copy_eligibility_scoring_or_exits() -> None:
     source = Path("src/cip/backtest/replay.py").read_text()
     for forbidden in (

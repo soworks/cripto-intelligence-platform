@@ -48,6 +48,7 @@ def _buy(**overrides: object) -> DecisionRecord:
         "score_components": {"trend": Decimal("50"), "rs": Decimal("30")},
         "rank": 1,
         "regime": "RISK_ON",
+        "raw_regime": "RISK_ON",
         "sources": (_source(),),
     }
     values.update(overrides)
@@ -63,9 +64,33 @@ def _ineligible(**overrides: object) -> DecisionRecord:
         "score_components": None,
         "rank": None,
         "regime": None,
+        "raw_regime": None,
     }
     values.update(overrides)
     return _buy(**values)
+
+
+def test_schema_version_two_keeps_the_raw_regime_beside_the_published_one() -> None:
+    held = _buy(
+        disposition=Disposition.SCORED,
+        reason_codes=("hysteresis",),
+        regime="RISK_OFF",
+        raw_regime="NEUTRAL",
+    )
+    document = held.to_document()
+    assert document["schema_version"] == 2
+    assert document["regime"] == "RISK_OFF"
+    assert document["raw_regime"] == "NEUTRAL"
+    assert DecisionRecord.from_document(document) == held
+    withheld = _ineligible(reason_codes=("hysteresis",), raw_regime="RISK_ON")
+    assert withheld.regime is None
+    assert withheld.to_document()["raw_regime"] == "RISK_ON"
+    with pytest.raises(ValidationError):
+        _buy(raw_regime=None)
+    obsolete = held.to_document()
+    obsolete["schema_version"] = 1
+    with pytest.raises(ValidationError):
+        DecisionRecord.from_document(obsolete)
 
 
 def test_a_buy_document_keeps_decimals_and_has_no_order_fields() -> None:
