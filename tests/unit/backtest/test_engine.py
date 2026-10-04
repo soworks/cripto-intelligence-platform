@@ -12,6 +12,7 @@ from cip.backtest.engine import (
     shared_window,
     simulate,
 )
+from cip.backtest.metadata import RunMetadata
 from cip.backtest.metrics import daily_returns, max_drawdown
 from cip.domain.errors import BacktestError
 from cip.history.bars import DailyBar
@@ -211,7 +212,25 @@ def test_a_contribution_day_below_cash_leaves_calmar_null() -> None:
         {"BTCUSDT": Decimal(1)},
         _FEE,
     )
-    report = build_report("a" * 64, tuple(days), schedule, book, book)
+    report = build_report(
+        "a" * 64,
+        tuple(days),
+        schedule,
+        book,
+        book,
+        RunMetadata(
+            policy_version="a" * 64,
+            dataset_start=days[0].isoformat(),
+            dataset_end=days[-1].isoformat(),
+            code_version="unknown",
+            benchmark="btc_dca_and_btc_eth_dca",
+            random_seed=None,
+            taker_fee_rate="0.00075",
+            spread="not_applied",
+            slippage="not_applied",
+            holdings_source="FIXTURE",
+        ),
+    )
 
     assert report["books"]["btc"]["calmar"] is None
     assert report["books"]["btc_eth"]["calmar"] is None
@@ -251,6 +270,12 @@ def test_repository_policy_run_uses_the_full_opening_contribution(tmp_path: Path
     report = run_benchmarks(tmp_path, _POLICY)
 
     assert len(report["policy_sha256"]) == 64
+    assert report["run"]["holdings_source"] == "FIXTURE"
+    assert report["run"]["benchmark"] == "btc_dca_and_btc_eth_dca"
+    assert report["run"]["spread"] == "not_applied"
+    assert report["run"]["slippage"] == "not_applied"
+    assert report["run"]["random_seed"] is None
+    assert report["run"]["policy_version"] == report["policy_sha256"]
     assert report["start"] == "2020-08-17"
     assert report["end"] == "2020-08-19"
     assert report["contributed_usd"] == "650.0"

@@ -73,3 +73,122 @@ strategy:
   max_holding_days: 56
   kill_after_closed_trades: 40
   kill_after_months: 6
+
+# Hypothesis values from the gap analysis. The universe and risk sections above
+# stay the Phase 1 placeholders. These blocks do not replace them.
+hypotheses:
+  universe:
+    normal:
+      median_quote_volume_30d_usd: 10000000
+      minimum_day_quote_volume_usd: 2000000
+      minimum_market_cap_usd: 300000000
+      market_cap_rank_ceiling: 150
+      minimum_circulating_ratio: 0.40
+      maximum_fdv_to_market_cap: 2.5
+      minimum_history_days: 200
+      maximum_median_spread_bps: 10
+      minimum_spread_snapshots: 6
+      minimum_depth_usd_per_side: 100000
+      turnover_min: 0.01
+      turnover_max: 0.50
+    high_risk:
+      median_quote_volume_30d_usd: 3000000
+      minimum_market_cap_usd: 75000000
+      maximum_market_cap_usd: 300000000
+      minimum_circulating_ratio: 0.25
+      require_known_unlock_schedule: true
+      minimum_history_days: 90
+      maximum_median_spread_bps: 25
+      minimum_depth_usd_per_side: 25000
+      turnover_flag_above: 0.50
+    exclusions:
+      stablecoin_symbols: [FDUSD, TUSD, USDE, USD1, PYUSD]
+      exclude_eur_stables: true
+      wrapped_symbols: [WBTC, WBETH, BNSOL, PAXG]
+      exclude_fan_tokens: true
+      exclude_non_trading: true
+      exclude_monitoring_tag: true
+      exclude_delisting: true
+      exclude_suspended_deposits: true
+      exclude_suspended_withdrawals: true
+      exclude_pending_migration: true
+    manipulation:
+      turnover_above: 0.50
+      volume_zscore_above: 4
+      price_move_below: 0.02
+      spike_candle_ceiling: 3
+      trade_size_stdev_above: 3
+      taker_buy_ratio_above: 0.70
+      escalation_block_days: 7
+      binance_volume_share_above: 0.80
+      binance_volume_share_below: 0.10
+      stablecoin_peg_deviation: 0.005
+      peg_deviation_hours: 1
+    new_listing:
+      high_risk_lane_days: 90
+      normal_lane_days: 200
+  fundamentals:
+    block_if_missing: [market_cap, circulating_supply, coingecko_id_verified]
+    minimum_circulating_ratio_without_unlocks: 0.40
+    unlock_pct_circ_14d: 0.01
+    unlock_pct_circ_90d: 0.05
+    mcap_disagreement: 0.25
+    maximum_fdv_to_market_cap: 4
+    data_max_age_hours: 36
+  regime:
+    hysteresis_days: 3
+    breadth_risk_on: 0.50
+    breadth_risk_off: 0.30
+    btc_drawdown_90d_risk_off: 0.20
+    risk_on:
+      new_entries: true
+      size_mult: 1.0
+      min_score: 70
+    neutral:
+      new_entries: true
+      size_mult: 0.5
+      min_score: 80
+      require_rs_vs_btc_30d_positive: true
+    risk_off:
+      new_entries: false
+      trailing_atr_mult: 1.5
+  sizing:
+    risk_per_trade_pct_of_portfolio: 0.0025
+    min_position_usd_floor: 25
+    min_notional_multiple: 4
+  limits:
+    max_open_discovery_positions: 5
+    max_positions_per_sector: 2
+    beta_weighted_discovery_exposure_max: 0.12
+    averaging_down_in_discovery: false
+  circuit_breakers:
+    halt_new_entries_drawdown: 0.20
+    review_and_flatten_drawdown: 0.30
+    consecutive_losses: 3
+    pause_days: 14
+    same_asset_reentry_cooldown_days: 10
+    monthly_realized_loss_pct_portfolio: 0.03
+  exits:
+    atr_period_days: 14
+    initial_stop_atr_mult: 2.5
+    initial_stop_max_pct: 0.15
+    partial_take_profit_r: 2.0
+    partial_take_profit_fraction: 0.33
+    trailing_atr_mult: 3.0
+    trailing_activate_after_r: 1.0
+    time_stop_days: 21
+    time_stop_return_vs_btc_ceiling: 0
+    max_holding_days: 56
+    forced_exit_triggers:
+      - delisting_announced
+      - monitoring_tag_added
+      - regime_risk_off
+      - unlock_pct_circ_within_7d_ge_0.02
+      - rs_rank_percentile_below_0.40
+  approval:
+    ttl_minutes: 240
+    adverse_drift_atr_fraction: 0.5
+    adverse_drift_floor: 0.02
+    favorable_drift_atr_multiple: 1.0
+    revalidate_on_execute: [regime, gates, filters, portfolio, stablecoin_peg]
+    exits_preauthorized_with_entry: true

@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from cip.backtest.metadata import RunMetadata, code_version, holdings_source
 from cip.backtest.metrics import (
     beta_alpha,
     calmar,
@@ -125,7 +126,19 @@ def run_benchmarks(klines: Path, policy_path: Path) -> dict[str, Any]:
     mix = {symbol: Decimal(str(weight)) for symbol, weight in policy.portfolio.core_mix.items()}
     btc_book = simulate(indexed, window, schedule, _BTC_WEIGHTS, fee)
     mixed_book = simulate(indexed, window, schedule, mix, fee)
-    return build_report(loaded.version, window, schedule, btc_book, mixed_book)
+    metadata = RunMetadata(
+        policy_version=loaded.version,
+        dataset_start=window[0].isoformat(),
+        dataset_end=window[-1].isoformat(),
+        code_version=code_version(),
+        benchmark="btc_dca_and_btc_eth_dca",
+        random_seed=None,
+        taker_fee_rate=format(fee, "f"),
+        spread="not_applied",
+        slippage="not_applied",
+        holdings_source=holdings_source(policy.portfolio.holdings_are_approximate),
+    )
+    return build_report(loaded.version, window, schedule, btc_book, mixed_book, metadata)
 
 
 def build_report(
@@ -134,6 +147,7 @@ def build_report(
     schedule: Sequence[tuple[date, Decimal]],
     btc: BookResult,
     mixed: BookResult,
+    metadata: RunMetadata,
 ) -> dict[str, Any]:
     contributions = dict(schedule)
     btc_returns = daily_returns(btc.equity, contributions)
@@ -145,6 +159,7 @@ def build_report(
     contributed = sum((amount for _day, amount in schedule), start=Decimal(0))
     return {
         "policy_sha256": policy_sha256,
+        "run": metadata.as_dict(),
         "start": window[0].isoformat(),
         "end": window[-1].isoformat(),
         "contributed_usd": format(contributed, "f"),

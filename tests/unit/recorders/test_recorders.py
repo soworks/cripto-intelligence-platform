@@ -1,0 +1,471 @@
+import json
+import runpy
+import sys
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
+
+import httpx
+import pytest
+
+from cip.adapters.market import Depth, DepthLevel
+from cip.domain.errors import ExchangeGeoBlockedError, RecorderError
+from cip.recorders.cli import main
+from cip.recorders.collect import collect, collect_live, persist
+from cip.recorders.observation import Observation
+from cip.recorders.sources import (
+    book_observations,
+    fetch_json,
+    parse_btc_dominance,
+    parse_funding,
+    parse_open_interest,
+    parse_stablecoin_supply,
+)
+from cip.recorders.store import append_failure, append_observation
+
+NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+SOURCE = datetime(2026, 10, 4, 11, 0, tzinfo=UTC)
+
+
+def _dominance() -> Observation:
+    return parse_btc_dominance(
+        {"data": {"market_cap_percentage": {"btc": 54.2}, "updated_at": 1_759_000_000}},
+        observed_at=NOW,
+    )
+
+
+def _supply() -> Observation:
+    return parse_stablecoin_supply(
+        [{"date": 1_759_000_000, "totalCirculatingUSD": {"peggedUSD": "180000000000"}}],
+        observed_at=NOW,
+    )
+
+
+def _book() -> Depth:
+    return Depth(
+        last_update_id=1,
+        bids=(
+            DepthLevel(price=Decimal("100"), quantity=Decimal("2")),
+            DepthLevel(price=Decimal("90"), quantity=Decimal("100")),
+        ),
+        asks=(
+            DepthLevel(price=Decimal("102"), quantity=Decimal("1")),
+            DepthLevel(price=Decimal("120"), quantity=Decimal("50")),
+        ),
+    )
+
+
+def test_parsers_keep_source_time_and_units() -> None:
+    dominance = _dominance()
+    supply = _supply()
+    funding = parse_funding(
+        {"symbol": "BTCUSDT", "lastFundingRate": "0.0001", "time": 1_759_000_000_000},
+        observed_at=NOW,
+        symbol="BTCUSDT",
+    )
+    interest = parse_open_interest(
+        {"symbol": "BTCUSDT", "openInterest": "12.5", "time": 1_759_000_000_000},
+        observed_at=NOW,
+        symbol="BTCUSDT",
+    )
+    spread, depth = book_observations("BTCUSDT", _book(), observed_at=NOW)
+
+    assert dominance.family == "market_regime"
+    assert dominance.source_timestamp == datetime.fromtimestamp(1_759_000_000, tz=UTC)
+    assert dominance.observed_at == NOW
+    assert dominance.symbol is None
+    assert dict(dominance.units) == {"btc_dominance": "percent"}
+    assert supply.family == "market_regime"
+    assert funding.family == "derivatives_positioning"
+    assert interest.values == (("open_interest", Decimal("12.5")),)
+    assert spread.family == "execution_liquidity"
+    assert dict(spread.values)["spread_bps"] > 0
+    assert dict(depth.values) == {"bid_usd": Decimal("200"), "ask_usd": Decimal("102")}
+
+
+@pytest.mark.parametrize(
+    "parse",
+    [
+        lambda: parse_btc_dominance({"data": {}}, observed_at=NOW),
+        lambda: parse_btc_dominance([], observed_at=NOW),
+        lambda: parse_btc_dominance(
+            {"data": {"market_cap_percentage": {"btc": 101}, "updated_at": 1}},
+            observed_at=NOW,
+        ),
+        lambda: parse_btc_dominance(
+            {"data": {"market_cap_percentage": {"btc": "nope"}, "updated_at": 1}},
+            observed_at=NOW,
+        ),
+        lambda: parse_btc_dominance(
+            {"data": {"market_cap_percentage": {"btc": True}, "updated_at": 1}},
+            observed_at=NOW,
+        ),
+        lambda: parse_stablecoin_supply([], observed_at=NOW),
+        lambda: parse_stablecoin_supply([{"totalCirculatingUSD": "x"}], observed_at=NOW),
+        lambda: parse_stablecoin_supply(
+            [{"date": 1, "totalCirculatingUSD": {"peggedUSD": -1}}], observed_at=NOW
+        ),
+        lambda: parse_funding(
+            {"symbol": "ETHUSDT", "lastFundingRate": "0.1", "time": 1},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        lambda: parse_funding({"symbol": "BTCUSDT", "time": 1}, observed_at=NOW, symbol="BTCUSDT"),
+        lambda: parse_open_interest(
+            {"symbol": "BTCUSDT", "openInterest": -1, "time": 1}, observed_at=NOW, symbol="BTCUSDT"
+        ),
+        lambda: parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.1", "time": -1},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        lambda: parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.1", "time": "1.5"},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        lambda: book_observations("BTCUSDT", Depth(1, (), ()), observed_at=NOW),
+        lambda: book_observations(
+            "BTCUSDT",
+            Depth(
+                1,
+                (DepthLevel(Decimal("10"), Decimal("1")),),
+                (DepthLevel(Decimal("9"), Decimal("1")),),
+            ),
+            observed_at=NOW,
+        ),
+    ],
+)
+def test_malformed_or_missing_payloads_do_not_become_observations(parse: object) -> None:
+    with pytest.raises(RecorderError):
+        parse()  # type: ignore[operator]
+
+
+def test_fetch_json_reports_timeout_server_error_and_malformed_body() -> None:
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("slow", request=request)
+
+    def status(request: httpx.Request) -> httpx.Response:
+        if "500" in str(request.url):
+            return httpx.Response(500)
+        if "451" in str(request.url):
+            return httpx.Response(451)
+        return httpx.Response(200, content=b"{")
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(timeout)) as client,
+        pytest.raises(RecorderError, match="timeout"),
+    ):
+        fetch_json(client, "https://example.test/slow")
+    with httpx.Client(transport=httpx.MockTransport(status)) as client:
+        with pytest.raises(RecorderError, match="status 500"):
+            fetch_json(client, "https://example.test/500")
+        with pytest.raises(ExchangeGeoBlockedError):
+            fetch_json(client, "https://example.test/451")
+        with pytest.raises(RecorderError, match="malformed"):
+            fetch_json(client, "https://example.test/bad")
+
+
+def test_a_transport_error_is_a_recorder_error() -> None:
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(broken)) as client,
+        pytest.raises(RecorderError, match="transport"),
+    ):
+        fetch_json(client, "https://example.test/down")
+
+
+def test_append_is_idempotent_and_refuses_a_conflicting_payload(tmp_path: Path) -> None:
+    observation = _dominance()
+    assert append_observation(tmp_path, observation) is True
+    assert append_observation(tmp_path, observation) is False
+    conflict = Observation(
+        series="btc_dominance",
+        provider="coingecko",
+        source_timestamp=observation.source_timestamp,
+        observed_at=NOW,
+        symbol=None,
+        values=(("btc_dominance", Decimal("1")),),
+        units=(("btc_dominance", "percent"),),
+    )
+    with pytest.raises(RecorderError, match="different payload"):
+        append_observation(tmp_path, conflict)
+    stored = list(tmp_path.rglob("observations/**/*.json"))
+    assert len(stored) == 1
+    document = json.loads(stored[0].read_text())
+    assert document["collection_status"] == "ok"
+    assert document["schema_version"] == 1
+    assert document["values"]["btc_dominance"] == "54.2"
+
+
+def test_a_failure_is_not_stored_as_an_observation(tmp_path: Path) -> None:
+    from cip.recorders.observation import CollectionFailure
+
+    failure = CollectionFailure(
+        series="btc_dominance",
+        provider="coingecko",
+        observed_at=NOW,
+        symbol=None,
+        error="timeout",
+    )
+    assert append_failure(tmp_path, failure) is True
+    assert append_failure(tmp_path, failure) is False
+    assert list(tmp_path.rglob("observations/**/*.json")) == []
+    assert len(list(tmp_path.rglob("observation-failures/**/*.json"))) == 1
+
+
+def test_one_provider_failure_does_not_drop_another(tmp_path: Path) -> None:
+    def boom() -> Observation:
+        raise RecorderError("timeout")
+
+    result = collect(
+        observed_at=NOW,
+        symbols=("BTCUSDT",),
+        dominance=boom,
+        stablecoins=_supply,
+        funding=lambda _symbol: parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.0001", "time": 1_759_000_000_000},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        open_interest=lambda _symbol: (_ for _ in ()).throw(ExchangeGeoBlockedError("451")),
+        book=lambda _symbol: book_observations("BTCUSDT", _book(), observed_at=NOW),
+    )
+    persist(tmp_path, result)
+
+    series = {item.series for item in result.observations}
+    assert series == {"stablecoin_supply", "funding", "spread", "depth"}
+    assert {item.series for item in result.failures} == {"btc_dominance", "open_interest"}
+    assert list((tmp_path / "observations").rglob("*btc_dominance*")) == []
+    assert list((tmp_path / "observations").rglob("*stablecoin_supply*"))
+
+
+def test_observation_shape_is_rejected() -> None:
+    from cip.recorders.observation import CollectionFailure
+
+    cases = [
+        dict(
+            series="btc_dominance",
+            provider="",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(("btc_dominance", Decimal("1")),),
+            units=(("btc_dominance", "percent"),),
+        ),
+        dict(
+            series="funding",
+            provider="binance",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(("funding_rate", Decimal("1")),),
+            units=(("funding_rate", "fraction"),),
+        ),
+        dict(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol="BTCUSDT",
+            values=(("btc_dominance", Decimal("1")),),
+            units=(("btc_dominance", "percent"),),
+        ),
+        dict(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(),
+            units=(),
+        ),
+        dict(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(("btc_dominance", Decimal("1")), ("btc_dominance", Decimal("2"))),
+            units=(("btc_dominance", "percent"), ("btc_dominance", "percent")),
+        ),
+        dict(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(("btc_dominance", Decimal("1")),),
+            units=(("other", "percent"),),
+        ),
+        dict(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(("btc_dominance", Decimal("1")),),
+            units=(("btc_dominance", ""),),
+        ),
+        dict(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=NOW.replace(tzinfo=None),
+            observed_at=NOW,
+            symbol=None,
+            values=(("btc_dominance", Decimal("1")),),
+            units=(("btc_dominance", "percent"),),
+        ),
+    ]
+    for fields in cases:
+        with pytest.raises(RecorderError):
+            Observation(**fields)
+    with pytest.raises(RecorderError):
+        CollectionFailure(
+            series="btc_dominance", provider="", observed_at=NOW, symbol=None, error="timeout"
+        )
+    with pytest.raises(RecorderError):
+        parse_btc_dominance(
+            {"data": {"market_cap_percentage": {"btc": -1}, "updated_at": 1}},
+            observed_at=NOW,
+        )
+    with pytest.raises(RecorderError):
+        parse_stablecoin_supply([1], observed_at=NOW)
+    with pytest.raises(RecorderError):
+        parse_open_interest(
+            {"symbol": "ETHUSDT", "openInterest": "1", "time": 1},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        )
+    with pytest.raises(RecorderError):
+        parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.1", "time": Decimal("1.5")},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        )
+    book = book_observations("BTCUSDT", _book(), observed_at=NOW)[0]
+    assert book.identity_time == NOW
+
+
+def test_naive_timestamps_and_unknown_series_are_rejected() -> None:
+    with pytest.raises(RecorderError):
+        Observation(
+            series="btc_dominance",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW.replace(tzinfo=None),
+            symbol=None,
+            values=(("btc_dominance", Decimal("1")),),
+            units=(("btc_dominance", "percent"),),
+        )
+    with pytest.raises(RecorderError):
+        Observation(
+            series="not-a-score",
+            provider="coingecko",
+            source_timestamp=None,
+            observed_at=NOW,
+            symbol=None,
+            values=(("x", Decimal("1")),),
+            units=(("x", "percent"),),
+        )
+
+
+def test_live_collect_appends_each_family(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "global" in url:
+            return httpx.Response(
+                200,
+                json={"data": {"market_cap_percentage": {"btc": 50}, "updated_at": 1_759_000_000}},
+            )
+        if "stablecoincharts" in url:
+            return httpx.Response(
+                200,
+                json=[{"date": 1_759_000_000, "totalCirculatingUSD": {"peggedUSD": 10}}],
+            )
+        if "premiumIndex" in url:
+            return httpx.Response(
+                200,
+                json={"symbol": "BTCUSDT", "lastFundingRate": "0.0001", "time": 1_759_000_000_000},
+            )
+        if "openInterest" in url:
+            return httpx.Response(
+                200,
+                json={"symbol": "BTCUSDT", "openInterest": "3", "time": 1_759_000_000_000},
+            )
+        return httpx.Response(500)
+
+    class Spot:
+        def depth(self, symbol: str, *, limit: int) -> Depth:
+            assert symbol == "BTCUSDT"
+            assert limit == 100
+            return _book()
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as public,
+        httpx.Client(transport=httpx.MockTransport(handler)) as futures,
+    ):
+        result = collect_live(
+            observed_at=NOW,
+            symbols=("BTCUSDT",),
+            spot=Spot(),
+            public=public,
+            futures=futures,
+        )
+    persist(tmp_path, result)
+    families = {item.family for item in result.observations}
+    assert families == {"market_regime", "derivatives_positioning", "execution_liquidity"}
+    assert result.failures == ()
+
+
+def test_cli_requires_a_symbol_and_prints_a_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = main(["run", "--output", str(tmp_path), "--symbols", " , "])
+    assert code == 2
+    assert capsys.readouterr().err.startswith("error:")
+
+    monkeypatch.setattr(
+        "cip.recorders.cli.collect_live",
+        lambda **_kwargs: collect(
+            observed_at=NOW,
+            symbols=(),
+            dominance=_dominance,
+            stablecoins=_supply,
+            funding=lambda _symbol: _dominance(),
+            open_interest=lambda _symbol: _dominance(),
+            book=lambda _symbol: (_dominance(), _dominance()),
+        ),
+    )
+    code = main(
+        [
+            "run",
+            "--output",
+            str(tmp_path),
+            "--symbols",
+            "BTCUSDT",
+            "--policy",
+            "policies/investment-policy.yaml",
+        ]
+    )
+    assert code == 0
+    assert "observations=" in capsys.readouterr().out
+
+
+def test_cli_reports_a_missing_policy(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["run", "--output", str(tmp_path), "--policy", str(tmp_path / "missing.yaml")])
+    assert code == 1
+    assert capsys.readouterr().err.startswith("error:")
+
+
+def test_module_entry_point_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cip.recorders", "run", "--output", str(tmp_path), "--symbols", " "],
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_module("cip.recorders", run_name="__main__")
+    assert exit_info.value.code == 2
