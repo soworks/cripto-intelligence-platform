@@ -84,6 +84,7 @@ jobs:
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.16.5
+          terraform_wrapper: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cip-lambda
@@ -98,6 +99,10 @@ jobs:
         env:
           TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
         run: |
+          if [ -z "${TF_VAR_alert_email}" ]; then
+            echo "error: ALERT_EMAIL is empty" >&2
+            exit 1
+          fi
           terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
           terraform validate
           terraform plan -input=false -no-color -lock=false | tee plan.txt

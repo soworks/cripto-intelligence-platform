@@ -8,6 +8,11 @@ runs the OIDC script.
 - Terraform 1.16.5 (`tfenv use 1.16.5`), `jq`, and `gh` (authenticated, for repository ID pinning).
 
 ## 1. Terraform bootstrap (state, boundaries, budget, CloudTrail)
+
+Set the alert recipient with `TF_VAR_alert_email`, or write it in an untracked
+`*.auto.tfvars` file in this directory. `ALERT_EMAIL` for dev plans and deploys
+is a repository secret, and it must be the address already stored in state.
+
     cd terraform/bootstrap
     terraform init
     terraform plan -out=tfplan && terraform apply tfplan
