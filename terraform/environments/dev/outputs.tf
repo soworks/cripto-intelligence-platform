@@ -17,3 +17,15 @@ output "pipeline_lambda_role_arn" {
 output "market_probe_function_name" {
   value = module.market_probe_lambda.lambda_function_name
 }
+
+output "recorder_function_name" {
+  value = module.recorders_lambda.lambda_function_name
+}
+
+output "recorder_schedule_name" {
+  value = local.recorders_name
+}
+
+output "data_bucket_name" {
+  value = module.data_bucket.s3_bucket_id
+}

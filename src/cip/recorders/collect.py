@@ -4,6 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,12 @@ from cip.recorders.sources import (
     parse_open_interest,
     parse_stablecoin_supply,
 )
-from cip.recorders.store import append_failure, append_observation
+from cip.recorders.store import (
+    DirectoryStore,
+    ObjectStore,
+    append_failure_to,
+    append_observation_to,
+)
 
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 
@@ -81,6 +87,7 @@ def collect_live(
     spot: MarketData,
     public: httpx.Client,
     futures: httpx.Client,
+    depth_band: Decimal,
 ) -> CollectionResult:
     return collect(
         observed_at=observed_at,
@@ -110,24 +117,33 @@ def collect_live(
             symbol=symbol,
         ),
         book=lambda symbol: book_observations(
-            symbol, spot.depth(symbol, limit=100), observed_at=observed_at
+            symbol,
+            spot.depth(symbol, limit=100),
+            observed_at=observed_at,
+            depth_band=depth_band,
         ),
     )
 
 
 def persist(root: Path, result: CollectionResult) -> None:
+    persist_to(DirectoryStore(root), result)
+
+
+def persist_to(store: ObjectStore, result: CollectionResult) -> None:
     errors: list[str] = []
     for observation in result.observations:
-        _store(errors, _writer(append_observation, root, observation))
+        _store(errors, _call(append_observation_to, store, observation))
     for failure in result.failures:
-        _store(errors, _writer(append_failure, root, failure))
+        _store(errors, _call(append_failure_to, store, failure))
     if errors:
         raise RecorderError("; ".join(errors))
 
 
-def _writer[T](write: Callable[[Path, T], bool], root: Path, item: T) -> Callable[[], bool]:
+def _call[T](
+    write: Callable[[ObjectStore, T], bool], store: ObjectStore, item: T
+) -> Callable[[], bool]:
     def call() -> bool:
-        return write(root, item)
+        return write(store, item)
 
     return call
 

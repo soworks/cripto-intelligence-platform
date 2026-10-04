@@ -376,6 +376,20 @@ def test_hypotheses_are_separate_from_phase1_placeholders(tmp_path: Path) -> Non
     assert load_policy(_write(tmp_path, yaml.safe_load(rewritten))).policy == policy
 
 
+def test_depth_band_is_loaded_from_policy() -> None:
+    recorders = load_policy(REPO_POLICY).policy.recorders
+    assert recorders.depth_band_bps == 200
+    assert recorders.depth_band == Decimal("0.02")
+
+
+def test_a_policy_without_recorders_is_rejected(
+    tmp_path: Path, policy_data: dict[str, Any]
+) -> None:
+    policy_data.pop("recorders", None)
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))
+
+
 def test_a_schema_v2_file_without_hypotheses_is_rejected(
     tmp_path: Path, policy_data: dict[str, Any]
 ) -> None:
@@ -387,6 +401,10 @@ def test_a_schema_v2_file_without_hypotheses_is_rejected(
 @pytest.mark.parametrize(
     ("path", "value"),
     [
+        (("recorders", "depth_band_bps"), "200"),
+        (("recorders", "depth_band_bps"), 0),
+        (("recorders", "depth_band_bps"), 10_001),
+        (("recorders", "depth_band_bps"), True),
         (("hypotheses", "regime", "hysteresis_days"), "3"),
         (("hypotheses", "regime", "hysteresis_days"), 0),
         (("hypotheses", "exits", "forced_exit_triggers"), ["not-a-trigger"]),

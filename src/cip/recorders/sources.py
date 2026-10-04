@@ -14,7 +14,6 @@ from cip.recorders.observation import Observation
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 DEFILLAMA_STABLECOINS = "https://stablecoins.llama.fi/stablecoincharts/all"
 FUTURES_BASE_URL = "https://fapi.binance.com"
-_DEPTH_BAND = Decimal("0.02")
 
 
 def fetch_json(client: httpx.Client, url: str, params: dict[str, str] | None = None) -> object:
@@ -92,6 +91,8 @@ def parse_open_interest(payload: object, *, observed_at: datetime, symbol: str) 
     body = _mapping(payload, "open interest")
     if body.get("symbol") != symbol:
         raise RecorderError("open interest symbol does not match the request")
+    # Binance reports open interest in the base asset. Notional uses a later
+    # point-in-time price; this recorder does not convert it.
     amount = _required_decimal(body, "openInterest")
     if amount < 0:
         raise RecorderError("open interest is negative")
@@ -107,8 +108,15 @@ def parse_open_interest(payload: object, *, observed_at: datetime, symbol: str) 
 
 
 def book_observations(
-    symbol: str, book: Depth, *, observed_at: datetime, provider: str = "binance"
+    symbol: str,
+    book: Depth,
+    *,
+    observed_at: datetime,
+    depth_band: Decimal,
+    provider: str = "binance",
 ) -> tuple[Observation, Observation]:
+    if not depth_band.is_finite() or depth_band <= 0 or depth_band > 1:
+        raise RecorderError("depth band must be a fraction from above 0 through 1")
     if not book.bids or not book.asks:
         raise RecorderError("depth book is empty")
     best_bid = book.bids[0].price
@@ -117,8 +125,8 @@ def book_observations(
         raise RecorderError("depth book is crossed or non-positive")
     mid = (best_bid + best_ask) / 2
     spread_bps = (best_ask - best_bid) / mid * Decimal(10_000)
-    bid_depth = _band_notional(book.bids, mid, below=True)
-    ask_depth = _band_notional(book.asks, mid, below=False)
+    bid_depth = _band_notional(book.bids, mid, depth_band, below=True)
+    ask_depth = _band_notional(book.asks, mid, depth_band, below=False)
     spread = _observation(
         series="spread",
         provider=provider,
@@ -140,9 +148,11 @@ def book_observations(
     return spread, depth
 
 
-def _band_notional(levels: tuple[Any, ...], mid: Decimal, *, below: bool) -> Decimal:
-    floor = mid * (1 - _DEPTH_BAND)
-    ceiling = mid * (1 + _DEPTH_BAND)
+def _band_notional(
+    levels: tuple[Any, ...], mid: Decimal, depth_band: Decimal, *, below: bool
+) -> Decimal:
+    floor = mid * (1 - depth_band)
+    ceiling = mid * (1 + depth_band)
     total = Decimal(0)
     for level in levels:
         price = level.price
