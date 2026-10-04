@@ -221,6 +221,8 @@ __marimo__/
 
 # Build and infrastructure artifacts
 build/
+*.auto.tfvars
+*.auto.tfvars.json
 *.zip
 !tests/fixtures/binance-vision/*.zip
 .terraform/
