@@ -76,7 +76,7 @@ Daily return on day `t` (every day after the first) is `(equity_t - contribution
 - **Sharpe** is `mean(daily returns) / sample_stdev(daily returns) * sqrt(365)`. The sample divisor is `n - 1`. The risk-free rate is zero. A zero standard deviation stores `null`.
 - **Sortino** uses downside deviation `sqrt(sum(min(r, 0)^2) / (n - 1))`, with positive returns contributing zero. A zero downside deviation stores `null`.
 - **Max drawdown** is the largest `(peak - index) / peak` on the time-weighted index. The index starts at 1 on the first day and multiplies by `(1 + daily return)` after that. A contribution cannot hide a price drop, because the return strips the contribution out. A max drawdown of zero stores Calmar as `null`.
-- **Calmar** is the annualized time-weighted return divided by max drawdown. Annualized return is `(1 + twr) ** (365 / span_days) - 1`, where `span_days` is `(last - first).days`.
+- **Calmar** is the annualized time-weighted return divided by max drawdown. Annualized return is `(1 + twr) ** (365 / span_days) - 1`, where `span_days` is `(last - first).days`. When `1 + twr` is not positive, Calmar is `null` and the command still exits 0. A contribution day can do that when the close mark of the book is below the cash added that morning.
 - **Excess, beta, alpha** are on the mixed book against the BTC book's daily returns. Excess is mixed time-weighted return minus BTC time-weighted return. Beta is sample covariance divided by the BTC book's sample variance. Alpha is the daily intercept `(mean(mixed) - beta * mean(btc)) * 365`. A zero BTC variance stores beta and alpha as `null`.
 
 ## Report

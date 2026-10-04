@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from cip.backtest.engine import (
+    build_report,
     load_symbol_bars,
     require_two_daily_returns,
     run_benchmarks,
@@ -190,6 +191,48 @@ def test_a_price_drop_on_a_contribution_day_draws_down_the_index() -> None:
     assert result.equity[0][1] == result.equity[1][1]
     returns = daily_returns(result.equity, {day0: Decimal("100"), day1: Decimal("100")})
     assert max_drawdown(returns) > 0
+
+
+def test_a_contribution_day_below_cash_leaves_calmar_null() -> None:
+    days = [date(2020, 1, 15) + timedelta(days=offset) for offset in range(20)]
+    btc: dict[date, DailyBar] = {}
+    for index, day in enumerate(days):
+        if index == 1:
+            btc[day] = _bar("BTCUSDT", day, "100", close="50")
+        else:
+            close = str(100 + index * 20)
+            btc[day] = _bar("BTCUSDT", day, close, close=close)
+    schedule = ((days[0], Decimal("650")), (days[1], Decimal("800")))
+
+    book = simulate(
+        {"BTCUSDT": btc},
+        tuple(days),
+        schedule,
+        {"BTCUSDT": Decimal(1)},
+        _FEE,
+    )
+    report = build_report("a" * 64, tuple(days), schedule, book, book)
+
+    assert report["books"]["btc"]["calmar"] is None
+    assert report["books"]["btc_eth"]["calmar"] is None
+
+
+def test_a_later_month_start_is_invested(tmp_path: Path) -> None:
+    days = [date(2020, 1, 31) + timedelta(days=offset) for offset in range(6)]
+    prices = ("100", "110", "120", "130", "140", "150")
+    _write(
+        tmp_path,
+        tuple(_bar("BTCUSDT", day, price) for day, price in zip(days, prices, strict=True)),
+    )
+    _write(
+        tmp_path,
+        tuple(_bar("ETHUSDT", day, price) for day, price in zip(days, prices, strict=True)),
+    )
+
+    report = run_benchmarks(tmp_path, _POLICY)
+
+    assert report["contributed_usd"] == "1450.0"
+    assert report["books"]["btc"]["equity"][1]["date"] == "2020-02-01"
 
 
 def test_repository_policy_run_uses_the_full_opening_contribution(tmp_path: Path) -> None:
