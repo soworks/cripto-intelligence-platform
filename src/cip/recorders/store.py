@@ -22,7 +22,7 @@ from cip.recorders.observation import (
 class ObjectStore(Protocol):
     def read(self, key: str) -> bytes | None: ...
 
-    def write(self, key: str, body: bytes) -> None: ...
+    def create(self, key: str, body: bytes) -> bool: ...
 
 
 class DirectoryStore:
@@ -35,12 +35,15 @@ class DirectoryStore:
             return None
         return path.read_bytes()
 
-    def write(self, key: str, body: bytes) -> None:
+    def create(self, key: str, body: bytes) -> bool:
         path = self._root / key
+        if path.exists():
+            return False
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f"{path.name}.tmp")
         temporary.write_bytes(body)
         temporary.replace(path)
+        return True
 
 
 class S3Store:
@@ -59,8 +62,16 @@ class S3Store:
         body: bytes = response["Body"].read()
         return body
 
-    def write(self, key: str, body: bytes) -> None:
-        self.client.put_object(Bucket=self.bucket, Key=key, Body=body)
+    def create(self, key: str, body: bytes) -> bool:
+        """Create the key only when it is absent. A missing key is not a GetObject."""
+        try:
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=body, IfNoneMatch="*")
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            if code in {"PreconditionFailed", "412"}:
+                return False
+            raise
+        return True
 
 
 def append_observation(root: Path, observation: Observation) -> bool:
@@ -106,14 +117,13 @@ def object_key(kind: str, family: str, series: str, moment: datetime, identity: 
 
 
 def _append(store: ObjectStore, key: str, body: bytes) -> bool:
+    if store.create(key, body):
+        return True
     current = store.read(key)
-    if current is not None:
-        if current == body or _same_point(current, body):
-            return False
-        name = key.rsplit("/", 1)[-1]
-        raise RecorderError(f"observation {name} already exists with a different payload")
-    store.write(key, body)
-    return True
+    if current == body or (current is not None and _same_point(current, body)):
+        return False
+    name = key.rsplit("/", 1)[-1]
+    raise RecorderError(f"observation {name} already exists with a different payload")
 
 
 def _same_point(current: bytes, body: bytes) -> bool:

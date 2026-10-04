@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import boto3
 import pytest
@@ -9,7 +10,12 @@ from moto import mock_aws
 from cip.domain.errors import RecorderError
 from cip.recorders.observation import CollectionFailure, Observation
 from cip.recorders.sources import parse_btc_dominance
-from cip.recorders.store import S3Store, append_failure_to, append_observation_to
+from cip.recorders.store import (
+    DirectoryStore,
+    S3Store,
+    append_failure_to,
+    append_observation_to,
+)
 from tests.unit.recorders.test_recorders import NOW, _dominance
 
 BUCKET = "cip-dev-data-test"
@@ -63,6 +69,25 @@ def test_s3_records_a_failure_and_refuses_a_changed_observation() -> None:
         keys = _keys(store)
     assert any(key.startswith("observation-failures/") for key in keys)
     assert all(not key.startswith("klines/") for key in keys)
+
+
+def test_a_missing_object_reads_as_absent(tmp_path: Path) -> None:
+    assert DirectoryStore(tmp_path).read("observations/missing") is None
+
+    class Missing:
+        def get_object(self, **_kwargs: object) -> None:
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "no"}}, "GetObject")
+
+    assert S3Store(Missing(), BUCKET).read("observations/missing") is None
+
+
+def test_s3_create_does_not_hide_access_errors() -> None:
+    class Denied:
+        def put_object(self, **_kwargs: object) -> None:
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "PutObject")
+
+    with pytest.raises(ClientError):
+        S3Store(Denied(), BUCKET).create("observations/missing", b"{}")
 
 
 def test_s3_read_does_not_hide_access_errors() -> None:
