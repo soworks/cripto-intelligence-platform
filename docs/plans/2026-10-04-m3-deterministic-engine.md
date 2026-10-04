@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–6 are merged. Slice 7 is the daily scan. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–7 are merged. Slice 8 is forward outcomes. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -16,7 +16,7 @@ Each slice is one implementation issue. Later slices call the replay contracts i
 5. **Regime.** Hysteresis and the per-regime discovery policy already in `hypotheses`. RISK_OFF produces no BUY. This slice.
 6. **Features, score v2, and the information-coefficient study.** Weights freeze in policy after the study. Liquidity and portfolio fit stay out of the score. This slice.
 7. **Daily scan.** Discover → gates → features → regime → score → record, after the 00:00 UTC close. Every evaluated symbol, including rejections, gets one decision. The ledger stores the decision key and its SHA-256. Zero provider calls on the score path. This slice.
-8. **Forward outcomes.** At 7/14/30/60 days, read the stored decision and later bars. Write an outcome document. Do not change the decision.
+8. **Forward outcomes.** At 7/14/30/60 days, read the stored decision and later bars. Write an outcome document. Do not change the decision. This slice.
 9. **Simulator and baselines.** Event-driven daily replay, equal-weight eligible universe, 1,000-run random baseline with a persisted seed. Uses slices 2, 5, and 6, and the M4 exit contract when that contract exists. M4 still owns exits.
 
 Pilot capital stays out of these records. `ALPHA_PILOT_2026_10` is a cohort label. The $800 monthly budget starts 2026-11-01. Available capital does not require a BUY.
@@ -84,6 +84,14 @@ Every snapshot symbol gets one decision, including a symbol with no packet. A sy
 A score is ranked only among scored symbols. `RISK_OFF` stays `SCORED`. `NEUTRAL` also requires `rs_30d_skip_1` to be positive. A score below the published state's `min_score` stays `SCORED`. Otherwise the disposition is `BUY`, which is a recommendation and still has no order id, quantity, or notional.
 
 The object key is `decisions/cohort={cohort}/date={utc-close-date}/symbol={symbol}/{id}.json`. The ledger event `DECISION_RECORDED` stores that key and the SHA-256 of the stored bytes.
+
+## Slice 8 forward outcomes
+
+`measure_outcome` reads one stored decision and later daily bars. It does not call a provider and it does not import eligibility or scoring. The decision file is not rewritten.
+
+The decision time is the 00:00 UTC close. The entry price is that session's close. A horizon of 7, 14, 30, or 60 days ends on the close that many days later. Absolute return and the BTC return are close to close over that same pair of bars. Excess return is the asset return minus the BTC return. Bars after the horizon, and the high and low of the entry bar, stay out of the excursion. MFE is the largest high-to-entry gain in the later bars, or zero when price never trades above the entry. MAE is the largest low-to-entry loss, or zero when price never trades below it. A missing day, a non-positive price, or a mismatched symbol writes nothing.
+
+The eligible-universe-relative return is the asset return minus the equal-weight mean of stored `SCORED` and `BUY` decisions from the same cohort and the same close. `INELIGIBLE` decisions are not members. A missing peer window leaves the field empty instead of dropping that name. The outcome still has no disposition and no score.
 
 ## Out of this milestone
 
