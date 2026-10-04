@@ -67,7 +67,7 @@ def _group(
     missing = [name for name in selected if name not in features]
     if missing:
         raise EvaluationError("score is missing a weighted feature")
-    return sum((weights[name] * features[name] for name in selected), Decimal(0))
+    return sum((weights[name] * _stored(features[name]) for name in selected), Decimal(0))
 
 
 def _penalty(features: Mapping[str, Decimal], weights: Mapping[str, Decimal]) -> Decimal | None:
@@ -75,7 +75,16 @@ def _penalty(features: Mapping[str, Decimal], weights: Mapping[str, Decimal]) ->
         return None
     if PENALTY_FEATURE not in features:
         raise EvaluationError("score is missing a weighted feature")
-    return -abs(weights[PENALTY_FEATURE]) * features[PENALTY_FEATURE]
+    count = _stored(features[PENALTY_FEATURE])
+    if count not in {Decimal(0), Decimal(1), Decimal(2), Decimal(3)}:
+        raise EvaluationError("extension count must be 0, 1, 2, or 3")
+    return -abs(weights[PENALTY_FEATURE]) * count
+
+
+def _stored(value: object) -> Decimal:
+    if type(value) is not Decimal or not value.is_finite():
+        raise EvaluationError("features are finite decimals")
+    return value
 
 
 def _weight(value: object) -> Decimal:

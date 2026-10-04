@@ -191,12 +191,114 @@ def test_bad_clocks_books_and_copies_are_refused() -> None:
             unlock_pct_14d=None,
             unlock_pct_90d=None,
         )
+    integer = DailyBar(
+        symbol="SOLUSDT",
+        open_date=AS_OF,
+        open=100,  # type: ignore[arg-type]
+        high=100,  # type: ignore[arg-type]
+        low=100,  # type: ignore[arg-type]
+        close=100,  # type: ignore[arg-type]
+        volume=Decimal("1"),
+        quote_volume=Decimal("10"),
+        trade_count=1,
+        taker_buy_base_volume=Decimal("1"),
+        taker_buy_quote_volume=Decimal("4"),
+    )
+    assert measure(
+        symbol="SOLUSDT",
+        as_of=AS_OF,
+        bars=(integer,),
+        btc_bars=(),
+        universe_bars={},
+        atr_period=14,
+        tokenomics=None,
+    ).reason_codes == ("invalid_price",)
+    crossed = _bar("SOLUSDT", AS_OF, "100")
+    crossed = DailyBar(
+        symbol=crossed.symbol,
+        open_date=crossed.open_date,
+        open=crossed.open,
+        high=Decimal("90"),
+        low=Decimal("110"),
+        close=crossed.close,
+        volume=crossed.volume,
+        quote_volume=crossed.quote_volume,
+        trade_count=crossed.trade_count,
+        taker_buy_base_volume=crossed.taker_buy_base_volume,
+        taker_buy_quote_volume=crossed.taker_buy_quote_volume,
+    )
+    assert measure(
+        symbol="SOLUSDT",
+        as_of=AS_OF,
+        bars=(crossed,),
+        btc_bars=(),
+        universe_bars={},
+        atr_period=14,
+        tokenomics=None,
+    ).reason_codes == ("invalid_price",)
+    with pytest.raises(ValidationError):
+        FeatureSet(features={"return_7d": 0.1 + 0.2}, reason_codes=("features_ready",))
+    with pytest.raises(ValidationError):
+        FeatureSet(features=[], reason_codes=("features_ready",))  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        FeatureSet(features={1: Decimal("1")}, reason_codes=("features_ready",))  # type: ignore[dict-item]
+    counted = _bar("SOLUSDT", AS_OF, "100")
+    counted = DailyBar(
+        symbol=counted.symbol,
+        open_date=counted.open_date,
+        open=counted.open,
+        high=counted.high,
+        low=counted.low,
+        close=counted.close,
+        volume=counted.volume,
+        quote_volume=counted.quote_volume,
+        trade_count=True,  # type: ignore[arg-type]
+        taker_buy_base_volume=counted.taker_buy_base_volume,
+        taker_buy_quote_volume=counted.taker_buy_quote_volume,
+    )
+    assert measure(
+        symbol="SOLUSDT",
+        as_of=AS_OF,
+        bars=(counted,),
+        btc_bars=(),
+        universe_bars={},
+        atr_period=14,
+        tokenomics=None,
+    ).reason_codes == ("invalid_price",)
+    ranged = tuple(
+        DailyBar(
+            symbol="SOLUSDT",
+            open_date=AS_OF - timedelta(days=HISTORY - 1 - offset),
+            open=Decimal("100"),
+            high=Decimal("102"),
+            low=Decimal("98"),
+            close=Decimal("100"),
+            volume=Decimal("1"),
+            quote_volume=Decimal("10"),
+            trade_count=1,
+            taker_buy_base_volume=Decimal("1"),
+            taker_buy_quote_volume=Decimal("4"),
+        )
+        for offset in range(HISTORY)
+    )
+    assert (
+        "undefined_rsi"
+        in measure(
+            symbol="SOLUSDT",
+            as_of=AS_OF,
+            bars=ranged,
+            btc_bars=_series("BTCUSDT", ["100"] * HISTORY),
+            universe_bars={},
+            atr_period=14,
+            tokenomics=None,
+        ).reason_codes
+    )
 
 
 def test_the_extension_penalty_uses_the_documented_triggers() -> None:
     closes = ["100"] * HISTORY
     closes[-1] = "200"
-    peers = {f"P{index}USDT": _series(f"P{index}USDT", ["100"] * 8) for index in range(19)}
+    peers = {f"P{index}USDT": _series(f"P{index}USDT", ["100"] * 8) for index in range(9)}
     reading = measure(
         symbol="SOLUSDT",
         as_of=AS_OF,
@@ -210,6 +312,16 @@ def test_the_extension_penalty_uses_the_documented_triggers() -> None:
     assert reading.features["extension_atr"] > Decimal("2.5")
     assert reading.features["return_7d"] > 0
     assert reading.features[PENALTY_FEATURE] == Decimal(3)
+    alone = measure(
+        symbol="SOLUSDT",
+        as_of=AS_OF,
+        bars=_series("SOLUSDT", closes),
+        btc_bars=_series("BTCUSDT", ["100"] * HISTORY),
+        universe_bars={},
+        atr_period=14,
+        tokenomics=_tokenomics(),
+    )
+    assert alone.features[PENALTY_FEATURE] == Decimal(2)
 
 
 def test_a_score_needs_frozen_weights_and_excludes_liquidity() -> None:
@@ -240,6 +352,14 @@ def test_a_score_needs_frozen_weights_and_excludes_liquidity() -> None:
         combine(features, {"rs_30d_vol_skip_1": Decimal("0")})
     with pytest.raises(EvaluationError, match="non-zero"):
         combine(features, {"rs_30d_vol_skip_1": Decimal("NaN")})
+    with pytest.raises(EvaluationError, match="extension count"):
+        combine({PENALTY_FEATURE: Decimal("-3")}, {PENALTY_FEATURE: Decimal("4")})
+    with pytest.raises(EvaluationError, match="finite decimals"):
+        combine({"circulating_ratio": True}, {"circulating_ratio": Decimal("1")})
+    with pytest.raises(EvaluationError, match="finite decimals"):
+        combine({"circulating_ratio": 1}, {"circulating_ratio": Decimal("1")})
+    zero = combine({"circulating_ratio": Decimal("0")}, {"circulating_ratio": Decimal("1")})
+    assert zero.score == Decimal("0")
     with pytest.raises(EvaluationError, match="missing"):
         combine({}, {"rs_30d_vol_skip_1": Decimal("1")})
 
