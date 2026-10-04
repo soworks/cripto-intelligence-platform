@@ -4,7 +4,9 @@ variable "region" {
 }
 
 variable "alert_email" {
-  type = string
+  description = "Alert recipient. Set with TF_VAR_alert_email or an untracked tfvars file."
+  type        = string
+  sensitive   = true
 }
 
 variable "monthly_budget_usd" {

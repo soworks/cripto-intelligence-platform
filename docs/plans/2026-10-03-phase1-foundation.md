@@ -2181,7 +2181,7 @@ output "workload_boundary_arns" {
 - [ ] **Step 10: Create `terraform/bootstrap/terraform.tfvars`**
 
 ```hcl
-alert_email       = "soworks86@gmail.com"
+# alert_email is TF_VAR_alert_email, not a committed value
 create_cloudtrail = true
 ```
 
@@ -3009,7 +3009,7 @@ variable "artifact_path" {
 `terraform/environments/dev/terraform.tfvars`:
 
 ```hcl
-alert_email = "soworks86@gmail.com"
+# alert_email is TF_VAR_alert_email, not a committed value
 ```
 
 - [ ] **Step 11: Create `terraform/environments/dev/main.tf`**
