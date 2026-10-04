@@ -101,7 +101,7 @@ def max_drawdown(returns: Sequence[Decimal]) -> Decimal:
 
 
 def calmar(twr: Decimal, drawdown: Decimal, span_days: int) -> Decimal | None:
-    if drawdown == 0:
+    if drawdown == 0 or (1 + twr) <= 0:
         return None
     annualized = (1 + twr) ** (_YEAR_DAYS / Decimal(span_days)) - 1
     return annualized / drawdown

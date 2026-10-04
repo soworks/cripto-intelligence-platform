@@ -125,6 +125,14 @@ def test_calmar_is_null_when_drawdown_is_zero() -> None:
     assert calmar(Decimal("0.1"), Decimal(0), 365) is None
 
 
+def test_calmar_annualizes_over_a_span_other_than_one_year() -> None:
+    assert calmar(Decimal("0.21"), Decimal("0.2"), 730) == Decimal("0.5")
+
+
+def test_calmar_is_null_when_the_wealth_index_is_not_positive() -> None:
+    assert calmar(Decimal("-1.1"), Decimal("0.5"), 100) is None
+
+
 def test_beta_and_alpha_against_btc() -> None:
     beta, alpha = beta_alpha(
         (Decimal("0.02"), Decimal("0.04")),
