@@ -11,7 +11,7 @@ set -euo pipefail
 PROFILE="soworks"
 REGION="us-east-1"
 EXPECTED_ACCOUNT="258485600712"
-REPO="soworks/cripto-intelligence-platform"
+REPO="soworks/crypto-intelligence-platform"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do

@@ -20,7 +20,7 @@ are GitHub repository variables (not secrets; an ARN is not a credential).
 - Trust: `StringEquals` on `aud = sts.amazonaws.com`, an exact `sub` per role, and
   `repository_id = 1403465152` + `repository_owner_id = 146444006`, so a re-created
   repository with the same name cannot assume them. The repository uses GitHub immutable
-  subjects, so `sub` is `repo:soworks@146444006/cripto-intelligence-platform@1403465152:`
+  subjects, so `sub` is `repo:soworks@146444006/crypto-intelligence-platform@1403465152:`
   followed by `pull_request`, `environment:dev` or `environment:prod`; the script reads
   this prefix from `GET /repos/{repo}/actions/oidc/customization/sub` (`sub_claim_prefix`).
 - `cip-gha-plan` has no AWS managed policy. Its inline `cip-gha-plan-read` policy allows

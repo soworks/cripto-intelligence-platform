@@ -63,7 +63,7 @@ no replacements.
 - creates or updates `cip-gha-plan`, `cip-gha-dev`, `cip-gha-prod` (max session 3600 s);
 - rewrites each trust policy: `aud = sts.amazonaws.com`, exact `sub`, and
   `repository_id` + `repository_owner_id`. The repository uses GitHub immutable subjects,
-  so `sub` = `repo:soworks@146444006/cripto-intelligence-platform@1403465152:` +
+  so `sub` = `repo:soworks@146444006/crypto-intelligence-platform@1403465152:` +
   `pull_request` / `environment:dev` / `environment:prod`. The prefix and IDs are read with
   `gh api` (`actions/oidc/customization/sub` -> `sub_claim_prefix`, and `repos/{repo}`), or
   from `GITHUB_SUB_PREFIX` / `GITHUB_REPOSITORY_ID` / `GITHUB_REPOSITORY_OWNER_ID`.
