@@ -4,9 +4,9 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Self
+from typing import Annotated, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from cip.domain.policy import FundamentalsHypotheses
 
@@ -38,6 +38,33 @@ def _number(value: object, label: str) -> Decimal | None:
     if not parsed.is_finite() or parsed < 0:
         raise ValueError(f"{label} is a non-negative finite decimal")
     return parsed
+
+
+def _optional_amount(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    return _number(value, "amount")
+
+
+def _optional_clock(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise ValueError("timestamp is timezone-aware UTC")
+    return _utc(value, "timestamp")
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if type(value) is not bool:
+        raise ValueError("flags are booleans")
+    return value
+
+
+Amount = Annotated[Decimal | None, BeforeValidator(_optional_amount)]
+Clock = Annotated[datetime | None, BeforeValidator(_optional_clock)]
+Flag = Annotated[bool | None, BeforeValidator(_optional_bool)]
 
 
 def _mapping(value: object, label: str) -> dict[str, Any]:
@@ -72,29 +99,29 @@ class _Strict(BaseModel):
 
 class CoinGeckoReading(_Strict):
     coingecko_id: str | None
-    market_cap_usd: Decimal | None
-    circulating_supply: Decimal | None
-    total_supply: Decimal | None
-    fully_diluted_valuation_usd: Decimal | None
-    source_timestamp: datetime | None
+    market_cap_usd: Amount
+    circulating_supply: Amount
+    total_supply: Amount
+    fully_diluted_valuation_usd: Amount
+    source_timestamp: Clock
 
 
 class CmcReading(_Strict):
-    market_cap_usd: Decimal | None
-    source_timestamp: datetime | None
+    market_cap_usd: Amount
+    source_timestamp: Clock
 
 
 class DefiLlamaFees(_Strict):
     """Parsed fees. They are not a gate until policy names a threshold."""
 
-    fees_24h_usd: Decimal | None
-    revenue_24h_usd: Decimal | None
+    fees_24h_usd: Amount
+    revenue_24h_usd: Amount
 
 
 class UnlockReading(_Strict):
-    schedule_known: bool | None
-    pct_circ_14d: Decimal | None
-    pct_circ_90d: Decimal | None
+    schedule_known: Flag
+    pct_circ_14d: Amount
+    pct_circ_90d: Amount
 
 
 class FundamentalsDecision(_Strict):
@@ -202,13 +229,17 @@ def assess_fundamentals(
     total = coingecko.total_supply
     if circulating is None:
         reasons.append("missing_circulating_supply")
-    if total is None or total == 0:
-        reasons.append("missing_total_supply")
-    elif circulating is not None and circulating > total:
+    elif circulating == 0:
+        reasons.append("invalid_circulating_supply")
+    if total is not None and total == 0:
+        reasons.append("invalid_total_supply")
+    elif circulating is not None and total is not None and circulating > total:
         reasons.append("circulating_exceeds_total")
     fdv = coingecko.fully_diluted_valuation_usd
     if fdv is None:
         reasons.append("missing_fully_diluted_valuation")
+    elif fdv == 0:
+        reasons.append("invalid_fully_diluted_valuation")
     elif cap is not None and cap > 0:
         ceiling = Decimal(str(hypotheses.maximum_fdv_to_market_cap))
         if fdv / cap > ceiling:
@@ -248,8 +279,10 @@ def _unlocks(
         reasons.extend(_known_unlock(unlocks.pct_circ_14d, hypotheses.unlock_pct_circ_14d, "14d"))
         reasons.extend(_known_unlock(unlocks.pct_circ_90d, hypotheses.unlock_pct_circ_90d, "90d"))
         return tuple(reasons)
-    if circulating is None or total is None or total == 0:
+    if circulating is None or total is None:
         return ("missing_circulating_ratio",)
+    if circulating == 0 or total == 0:
+        return ()
     ratio = circulating / total
     floor = Decimal(str(hypotheses.minimum_circulating_ratio_without_unlocks))
     if ratio < floor:

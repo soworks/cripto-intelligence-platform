@@ -123,9 +123,15 @@ def test_the_cross_check_and_supply_gates_fail_closed() -> None:
     assert _assess(coingecko=_cg(fully_diluted_valuation_usd=None)).reason_codes == (
         "missing_fully_diluted_valuation",
     )
-    assert _assess(coingecko=_cg(total_supply=None)).reason_codes == ("missing_total_supply",)
+    assert _assess(coingecko=_cg(total_supply=None)).accepted is True
     zero_supply = _assess(coingecko=_cg(total_supply=Decimal("0")))
-    assert zero_supply.reason_codes == ("missing_total_supply",)
+    assert zero_supply.reason_codes == ("invalid_total_supply",)
+    assert _assess(coingecko=_cg(circulating_supply=Decimal("0"))).reason_codes == (
+        "invalid_circulating_supply",
+    )
+    assert _assess(coingecko=_cg(fully_diluted_valuation_usd=Decimal("0"))).reason_codes == (
+        "invalid_fully_diluted_valuation",
+    )
 
 
 def test_ids_and_clocks_fail_closed() -> None:
@@ -167,6 +173,18 @@ def test_unknown_unlocks_are_not_treated_as_zero() -> None:
     assert _assess(unlocks=_unlocks(schedule_known=None)).reason_codes == (
         "missing_unlock_schedule",
     )
+    zero_total = _assess(
+        unlocks=_unlocks(schedule_known=False),
+        coingecko=_cg(total_supply=Decimal("0")),
+    )
+    assert "invalid_total_supply" in zero_total.reason_codes
+    assert "missing_circulating_ratio" not in zero_total.reason_codes
+    zero_circulating = _assess(
+        unlocks=_unlocks(schedule_known=False),
+        coingecko=_cg(circulating_supply=Decimal("0")),
+    )
+    assert "invalid_circulating_supply" in zero_circulating.reason_codes
+    assert "circulating_ratio_without_unlocks" not in zero_circulating.reason_codes
     no_supply = _assess(
         unlocks=_unlocks(schedule_known=False),
         coingecko=_cg(circulating_supply=None),
@@ -225,6 +243,18 @@ def test_parsers_reject_malformed_payloads_and_keep_absent_quotes() -> None:
     ahead = timezone(timedelta(hours=1))
     with pytest.raises(ValueError, match=r"is|UTC"):
         _assess(as_of=datetime(2026, 10, 4, tzinfo=ahead))
+    with pytest.raises(ValidationError):
+        _cg(market_cap_usd=Decimal("-1"))
+    with pytest.raises(ValidationError):
+        _cg(fully_diluted_valuation_usd=0.1 + 0.2)
+    with pytest.raises(ValidationError):
+        _cg(source_timestamp=datetime(2026, 10, 4))  # noqa: DTZ001
+    with pytest.raises(ValidationError):
+        _cg(source_timestamp="2026-10-04T00:00:00Z")
+    with pytest.raises(ValidationError):
+        _unlocks(pct_circ_14d=Decimal("-0.01"))
+    with pytest.raises(ValidationError):
+        _unlocks(schedule_known=0)
     with pytest.raises(ValidationError):
         FundamentalsDecision(accepted=True, reason_codes=("missing_market_cap",))
     with pytest.raises(ValidationError):
