@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–3 are merged. Slice 4 is fundamentals. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–4 are merged. Slice 5 is the regime classifier. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -13,7 +13,7 @@ Each slice is one implementation issue. Later slices call the replay contracts i
 2. **Eligibility and exclusions.** Normal and high-risk lanes, exclusion list, reason codes. No BUY when a required input is missing. This slice.
 3. **Liquidity, manipulation, and the new-listing lane.** 30-day medians, spread and depth, manipulation block. Listing age is the lane `minimum_history_days` already applied in slice 2; this slice calls that assessment instead of copying it. A listing does not create a BUY. This slice.
 4. **Fundamentals.** CoinGecko primary, CMC cross-check, DefiLlama. Missing data is a rejection, not a filled value. This slice.
-5. **Regime.** Hysteresis and the per-regime discovery policy already in `hypotheses`. RISK_OFF produces no BUY.
+5. **Regime.** Hysteresis and the per-regime discovery policy already in `hypotheses`. RISK_OFF produces no BUY. This slice.
 6. **Features, score v2, and the information-coefficient study.** Weights freeze in policy after the study. Liquidity and portfolio fit stay out of the score.
 7. **Daily scan.** Discover → gates → features → regime → score → record, after the 00:00 UTC close. Every evaluated symbol, including rejections, gets one decision. The ledger stores the decision key and its SHA-256. Zero provider calls on the score path.
 8. **Forward outcomes.** At 7/14/30/60 days, read the stored decision and later bars. Write an outcome document. Do not change the decision.
@@ -56,6 +56,16 @@ Normal-lane gates in this slice are rank, circulating ratio, FDV to market cap, 
 ## Slice 4 fundamentals
 
 Parsers read CoinGecko market data, a CMC USD quote, and DefiLlama fees. A missing key stays missing. They do not call providers and do not replace a missing number with zero. Readings reject floats, booleans, negatives, and naive timestamps. `assess_fundamentals` uses CoinGecko as the primary cap and supply, checks it against CMC, and requires the base asset's hand-verified CoinGecko id. A present zero cap, supply, or FDV is invalid, not missing. Total supply is required only when the unlock schedule is unknown; a known schedule does not invent that number. Unknown unlock percentages are not treated as zero. DefiLlama fees are parsed and are not a gate until the policy has a threshold.
+
+## Slice 5 regime
+
+`classify` reads stored BTCUSDT daily bars, stored universe bars, stored `btc_dominance` and `stablecoin_supply` observations, and stored prior sessions. It does not call providers. Dominance and stablecoin supply must be present for the session date; their magnitudes are not gates, because the policy has no threshold for them. A missing or stale observation, a missing BTC window, or a missing breadth sample rejects the session.
+
+The raw state uses the hypothesis thresholds. BTC above its 200-day average and breadth at or above `breadth_risk_on` is RISK_ON. Exactly one of those two is NEUTRAL. BTC below that average and breadth below `breadth_risk_off`, or a 90-day drawdown above `btc_drawdown_90d_risk_off`, is RISK_OFF. Drawdown wins when both a risk-on tape and a drawdown breach are true. Anything else is unclassified, not a filled NEUTRAL.
+
+Breadth is the share of symbols whose close is above the EMA50 of a contiguous daily tail of at least 50 sessions. A symbol without that tail is left out of the ratio. A present non-positive price rejects the session.
+
+Hysteresis uses `hysteresis_days`. RISK_OFF and any tighter state publish on the session they appear. A looser state publishes only after that many consecutive raw sessions, or it keeps the tighter published state. The first looser session does not publish a regime and does not allow entries. The discovery fields on the decision are the published state's fields from `hypotheses`. RISK_OFF has `new_entries` false. An acceptance is not a BUY.
 
 ## Out of this milestone
 
