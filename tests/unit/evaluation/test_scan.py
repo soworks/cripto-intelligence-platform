@@ -229,6 +229,7 @@ def test_rejections_are_recorded_and_weights_are_not_invented(tmp_path: Path) ->
     bars = {
         "BTCUSDT": _series("BTCUSDT", 200, last="110"),
         "SOLUSDT": _series("SOLUSDT", 200, last="110"),
+        "ETHUSDT": _series("ETHUSDT", 200),
     }
     result = _scan(
         tmp_path,
@@ -255,7 +256,11 @@ def test_rejections_are_recorded_and_weights_are_not_invented(tmp_path: Path) ->
     assert scored.features["circulating_ratio"] == Decimal("1")
     assert scored.score is None
     assert scored.rank is None
+    assert missing.disposition is Disposition.INELIGIBLE
     assert missing.reason_codes == ("missing_candidate",)
+    assert missing.features["ema_20"] == Decimal("100")
+    assert missing.score is None
+    assert missing.rank is None
     assert result.stored[1].created is True
     assert result.stored[1].key == (
         f"decisions/cohort=SHADOW/date=2026-10-04/symbol=SOLUSDT/{decision_id(scored)}.json"

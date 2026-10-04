@@ -174,8 +174,6 @@ def _prepare(
     regime: RegimeDecision,
 ) -> _Prepared:
     sources = _sources(snapshot, candidate, evaluated_at)
-    if candidate is None:
-        return _ineligible(symbol, ("missing_candidate",), {}, regime.regime, sources)
     hypotheses = policy.policy.hypotheses
     features = measure(
         symbol=symbol,
@@ -184,8 +182,10 @@ def _prepare(
         btc_bars=bars.get(_BTC, ()),
         universe_bars={name: series for name, series in bars.items() if name != _BTC},
         atr_period=hypotheses.exits.atr_period_days,
-        tokenomics=candidate.tokenomics,
+        tokenomics=None if candidate is None else candidate.tokenomics,
     ).features
+    if candidate is None:
+        return _ineligible(symbol, ("missing_candidate",), features, regime.regime, sources)
     market = assess_market(candidate.facts, candidate.market, hypotheses.universe)
     if not market.eligible:
         return _ineligible(symbol, market.reason_codes, features, regime.regime, sources)
