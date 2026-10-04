@@ -36,3 +36,7 @@ class BacktestError(CipError):
 
 class RecorderError(CipError):
     """A provider response cannot become an observation; callers must not invent one."""
+
+
+class EvaluationError(CipError):
+    """A decision or outcome cannot be stored; callers must not rewrite the original."""
