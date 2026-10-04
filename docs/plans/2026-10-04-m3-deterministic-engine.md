@@ -35,7 +35,11 @@ Required fields: cohort (`BACKTEST`, `ALPHA_PILOT_2026_10`, `SHADOW`, `LIVE`), s
 
 `ForwardOutcome` references the decision id and a horizon of 7, 14, 30, or 60 days. It stores absolute return, BTC return over the same window, excess return (absolute minus BTC), eligible-universe-relative return when it can be reproduced, MFE, and MAE. It has no disposition and no score. The store writes it only after the horizon has elapsed, and only if that decision file already exists. A second payload for the same decision and horizon is refused.
 
-Local files use `decisions/` and `decision-outcomes/`. The daily scan's S3 layout is slice 7. Bar math for the returns is slice 8. This slice stores a finished outcome document and refuses an early one.
+Local files are `decisions/cohort={cohort}/date={utc-date}/symbol={symbol}/{id}.json` and `decision-outcomes/decision={id}/horizon={days}.json`. The daily scan's S3 layout is slice 7. Bar math for the returns is slice 8. This slice stores a finished outcome document and refuses an early one.
+
+A decimal field is a finite `Decimal` or a decimal string. A float is refused, so a binary artifact cannot be frozen as the only copy. JSON decimals stay strings. Returns are fractions. MAE is a non-positive return and MFE is a non-negative return.
+
+The outcome write loads the one decision file, rebuilds the record, and refuses the outcome unless that file still hashes to the decision id. A second file with the same id is refused. The decision file is not repaired or replaced.
 
 ## Out of this milestone
 
