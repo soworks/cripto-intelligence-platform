@@ -55,6 +55,17 @@ def _finite_decimal(value: object) -> Decimal:
     return parsed
 
 
+def _feature_map(value: object) -> dict[str, Decimal]:
+    if not isinstance(value, dict):
+        raise ValueError("features are an object")
+    parsed: dict[str, Decimal] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("feature names are strings")
+        parsed[key] = _finite_decimal(item)
+    return parsed
+
+
 def _optional_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -77,7 +88,7 @@ class Tokenomics(_Strict):
 class FeatureSet(_Strict):
     """Point-in-time features. Liquidity and portfolio fit are not features of the score."""
 
-    features: dict[str, Decimal]
+    features: Annotated[dict[str, Decimal], BeforeValidator(_feature_map)]
     reason_codes: tuple[str, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -145,7 +156,11 @@ def _level_features(
     else:
         reasons.append("missing_atr")
     if len(closes) > _RSI_PERIOD:
-        features["rsi_14"] = _rsi(closes, _RSI_PERIOD)
+        rsi = _rsi(closes, _RSI_PERIOD)
+        if rsi is None:
+            reasons.append("undefined_rsi")
+        else:
+            features["rsi_14"] = rsi
     else:
         reasons.append("missing_rsi")
 
@@ -164,18 +179,21 @@ def _extension(
         reasons.append("missing_return_7d")
         return
     features["return_7d"] = own_return
-    if "ema_20" not in features or f"atr_{atr_period}" not in features or "rsi_14" not in features:
+    if "ema_20" not in features or f"atr_{atr_period}" not in features:
         reasons.append("missing_extension")
         return
     atr = features[f"atr_{atr_period}"]
     if atr == 0:
         reasons.append("invalid_atr")
         return
+    if "rsi_14" not in features:
+        reasons.append("missing_extension")
+        return
     distance = (closes[-1] - features["ema_20"]) / atr
     features["extension_atr"] = distance
-    peer_returns = _peer_returns(universe_bars, tail, as_of, own_return)
+    others = _peer_returns(universe_bars, tail, as_of, own_return)[1:]
     triggered = int(distance > _EXTENSION_ATR) + int(features["rsi_14"] > _EXTENSION_RSI)
-    triggered += int(own_return > _percentile(peer_returns, _EXTENSION_PERCENTILE))
+    triggered += int(_above_peers(own_return, others))
     features[PENALTY_FEATURE] = Decimal(triggered)
 
 
@@ -313,7 +331,27 @@ def _tail(bars: Sequence[DailyBar], symbol: str, as_of: date) -> tuple[DailyBar,
 
 
 def _bad_prices(bars: Sequence[DailyBar]) -> bool:
-    return any(bar.close <= 0 or bar.high <= 0 or bar.low <= 0 for bar in bars)
+    return any(_malformed(bar) for bar in bars)
+
+
+def _malformed(bar: DailyBar) -> bool:
+    amounts = (
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+        bar.volume,
+        bar.quote_volume,
+        bar.taker_buy_base_volume,
+        bar.taker_buy_quote_volume,
+    )
+    if any(type(item) is not Decimal or not item.is_finite() or item < 0 for item in amounts):
+        return True
+    if type(bar.trade_count) is not int:
+        return True
+    if bar.open <= 0 or bar.high <= 0 or bar.low <= 0 or bar.close <= 0:
+        return True
+    return bar.high < max(bar.low, bar.open, bar.close) or bar.low > min(bar.open, bar.close)
 
 
 def _span_return(bars: tuple[DailyBar, ...], as_of: date, window: int, skip: int) -> Decimal | None:
@@ -408,7 +446,7 @@ def _atr(bars: tuple[DailyBar, ...], period: int) -> Decimal:
     return value
 
 
-def _rsi(closes: tuple[Decimal, ...], period: int) -> Decimal:
+def _rsi(closes: tuple[Decimal, ...], period: int) -> Decimal | None:
     changes = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
     average_gain = sum((change for change in changes[:period] if change > 0), Decimal(0))
     average_loss = sum((-change for change in changes[:period] if change < 0), Decimal(0))
@@ -420,16 +458,17 @@ def _rsi(closes: tuple[Decimal, ...], period: int) -> Decimal:
         average_gain = (average_gain * Decimal(period - 1) + gain) / Decimal(period)
         average_loss = (average_loss * Decimal(period - 1) + loss) / Decimal(period)
     if average_gain == 0 and average_loss == 0:
-        return Decimal(50)
+        return None
     if average_loss == 0:
         return Decimal(100)
     return Decimal(100) - Decimal(100) / (1 + average_gain / average_loss)
 
 
-def _percentile(values: Sequence[Decimal], fraction: Decimal) -> Decimal:
-    ordered = sorted(values)
-    rank = (fraction * Decimal(len(ordered))).to_integral_value(rounding="ROUND_CEILING")
-    return ordered[int(rank) - 1]
+def _above_peers(own: Decimal, others: Sequence[Decimal]) -> bool:
+    if not others:
+        return False
+    below = sum(1 for value in others if value < own)
+    return Decimal(below) / Decimal(len(others)) > _EXTENSION_PERCENTILE
 
 
 def _median(values: list[Decimal]) -> Decimal:
