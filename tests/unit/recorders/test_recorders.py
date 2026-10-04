@@ -1,7 +1,7 @@
 import json
 import runpy
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,9 +9,14 @@ import httpx
 import pytest
 
 from cip.adapters.market import Depth, DepthLevel
-from cip.domain.errors import ExchangeGeoBlockedError, RecorderError
+from cip.domain.errors import (
+    ExchangeBannedError,
+    ExchangeGeoBlockedError,
+    MarketDataError,
+    RecorderError,
+)
 from cip.recorders.cli import main
-from cip.recorders.collect import collect, collect_live, persist
+from cip.recorders.collect import CollectionResult, collect, collect_live, persist
 from cip.recorders.observation import Observation
 from cip.recorders.sources import (
     book_observations,
@@ -456,6 +461,167 @@ def test_cli_requires_a_symbol_and_prints_a_summary(
 
 def test_cli_reports_a_missing_policy(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code = main(["run", "--output", str(tmp_path), "--policy", str(tmp_path / "missing.yaml")])
+    assert code == 1
+    assert capsys.readouterr().err.startswith("error:")
+
+
+def test_a_later_poll_of_the_same_point_keeps_the_first_file(tmp_path: Path) -> None:
+    first = _dominance()
+    later = Observation(
+        series=first.series,
+        provider=first.provider,
+        source_timestamp=first.source_timestamp,
+        observed_at=NOW + timedelta(hours=1),
+        symbol=None,
+        values=first.values,
+        units=first.units,
+    )
+    supply = _supply()
+    assert append_observation(tmp_path, first) is True
+    assert append_observation(tmp_path, later) is False
+    stored = json.loads(next(tmp_path.rglob("*.json")).read_text())
+    assert stored["observed_at"] == NOW.isoformat()
+    with pytest.raises(RecorderError, match="different payload"):
+        persist(
+            tmp_path,
+            CollectionResult(
+                observations=(
+                    Observation(
+                        series=first.series,
+                        provider=first.provider,
+                        source_timestamp=first.source_timestamp,
+                        observed_at=later.observed_at,
+                        symbol=None,
+                        values=(("btc_dominance", Decimal("1")),),
+                        units=first.units,
+                    ),
+                    supply,
+                ),
+                failures=(),
+            ),
+        )
+    assert list((tmp_path / "observations").rglob("*stablecoin_supply*"))
+
+
+def test_a_spot_error_records_spread_and_depth_and_keeps_the_rest() -> None:
+    def book(_symbol: str) -> tuple[Observation, Observation]:
+        raise MarketDataError("Binance returned HTTP 500")
+
+    result = collect(
+        observed_at=NOW,
+        symbols=("BTCUSDT", "BTC&USDT"),
+        dominance=_dominance,
+        stablecoins=_supply,
+        funding=lambda _symbol: parse_funding(
+            {"symbol": "BTCUSDT", "lastFundingRate": "0.0001", "time": 1_759_000_000_000},
+            observed_at=NOW,
+            symbol="BTCUSDT",
+        ),
+        open_interest=lambda _symbol: (_ for _ in ()).throw(httpx.TimeoutException("slow")),
+        book=book,
+    )
+    failed = {(item.series, item.symbol) for item in result.failures}
+    assert ("spread", "BTCUSDT") in failed
+    assert ("depth", "BTCUSDT") in failed
+    assert ("funding", "BTC&USDT") in failed
+    assert ("depth", "BTC&USDT") in failed
+    assert {item.series for item in result.observations} == {
+        "btc_dominance",
+        "stablecoin_supply",
+        "funding",
+    }
+
+
+def test_a_corrupt_existing_file_is_not_replaced(tmp_path: Path) -> None:
+    observation = _dominance()
+    append_observation(tmp_path, observation)
+    path = next(tmp_path.rglob("*.json"))
+    changed = Observation(
+        series=observation.series,
+        provider=observation.provider,
+        source_timestamp=observation.source_timestamp,
+        observed_at=observation.observed_at,
+        symbol=None,
+        values=(("btc_dominance", Decimal("1")),),
+        units=observation.units,
+    )
+    path.write_bytes(b"not-json")
+    with pytest.raises(RecorderError, match="different payload"):
+        append_observation(tmp_path, changed)
+    assert path.read_bytes() == b"not-json"
+    path.write_bytes(b"[]")
+    with pytest.raises(RecorderError, match="different payload"):
+        append_observation(tmp_path, changed)
+    assert path.read_bytes() == b"[]"
+
+
+def test_a_ban_from_one_series_stops_the_collection() -> None:
+    def funding(_symbol: str) -> Observation:
+        raise ExchangeBannedError("Binance returned 418; the scan must stop")
+
+    with pytest.raises(ExchangeBannedError):
+        collect(
+            observed_at=NOW,
+            symbols=("BTCUSDT",),
+            dominance=_dominance,
+            stablecoins=_supply,
+            funding=funding,
+            open_interest=lambda _symbol: _supply(),
+            book=lambda _symbol: book_observations("BTCUSDT", _book(), observed_at=NOW),
+        )
+
+
+def test_a_ban_stops_the_collection() -> None:
+    def book(_symbol: str) -> tuple[Observation, Observation]:
+        raise ExchangeBannedError("Binance returned 418; the scan must stop")
+
+    with pytest.raises(ExchangeBannedError):
+        collect(
+            observed_at=NOW,
+            symbols=("BTCUSDT",),
+            dominance=_dominance,
+            stablecoins=_supply,
+            funding=lambda _symbol: _dominance(),
+            open_interest=lambda _symbol: _dominance(),
+            book=book,
+        )
+
+
+def test_non_finite_numbers_are_rejected() -> None:
+    with pytest.raises(RecorderError, match="non-finite"):
+        parse_btc_dominance(
+            {"data": {"market_cap_percentage": {"btc": "Infinity"}, "updated_at": 1}},
+            observed_at=NOW,
+        )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"btc": NaN}')
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(RecorderError, match="malformed"),
+    ):
+        fetch_json(client, "https://example.test/nan")
+
+
+def test_cli_prints_a_market_data_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(**_kwargs: object) -> CollectionResult:
+        raise MarketDataError("Binance returned HTTP 500")
+
+    monkeypatch.setattr("cip.recorders.cli.collect_live", boom)
+    code = main(
+        [
+            "run",
+            "--output",
+            str(tmp_path),
+            "--symbols",
+            "BTCUSDT",
+            "--policy",
+            "policies/investment-policy.yaml",
+        ]
+    )
     assert code == 1
     assert capsys.readouterr().err.startswith("error:")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -8,7 +9,7 @@ from pathlib import Path
 import httpx
 
 from cip.adapters.market import MarketData
-from cip.domain.errors import ExchangeGeoBlockedError, RecorderError
+from cip.domain.errors import ExchangeBannedError, MarketDataError, RecorderError
 from cip.recorders.observation import CollectionFailure, Observation
 from cip.recorders.sources import (
     COINGECKO_GLOBAL,
@@ -22,6 +23,8 @@ from cip.recorders.sources import (
     parse_stablecoin_supply,
 )
 from cip.recorders.store import append_failure, append_observation
+
+_SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,9 @@ def collect(
     _take(observations, failures, "btc_dominance", "coingecko", None, observed_at, dominance)
     _take(observations, failures, "stablecoin_supply", "defillama", None, observed_at, stablecoins)
     for symbol in symbols:
+        if _SYMBOL.fullmatch(symbol) is None:
+            _reject_symbol(failures, symbol, observed_at)
+            continue
         _take(
             observations,
             failures,
@@ -64,15 +70,7 @@ def collect(
             observed_at,
             _bind(open_interest, symbol),
         )
-        _take(
-            observations,
-            failures,
-            "spread",
-            "binance",
-            symbol,
-            observed_at,
-            _bind(book, symbol),
-        )
+        _take_book(observations, failures, symbol, observed_at, _bind(book, symbol))
     return CollectionResult(observations=tuple(observations), failures=tuple(failures))
 
 
@@ -94,12 +92,20 @@ def collect_live(
             fetch_json(public, DEFILLAMA_STABLECOINS), observed_at=observed_at
         ),
         funding=lambda symbol: parse_funding(
-            fetch_json(futures, f"{FUTURES_BASE_URL}/fapi/v1/premiumIndex?symbol={symbol}"),
+            fetch_json(
+                futures,
+                f"{FUTURES_BASE_URL}/fapi/v1/premiumIndex",
+                {"symbol": symbol},
+            ),
             observed_at=observed_at,
             symbol=symbol,
         ),
         open_interest=lambda symbol: parse_open_interest(
-            fetch_json(futures, f"{FUTURES_BASE_URL}/fapi/v1/openInterest?symbol={symbol}"),
+            fetch_json(
+                futures,
+                f"{FUTURES_BASE_URL}/fapi/v1/openInterest",
+                {"symbol": symbol},
+            ),
             observed_at=observed_at,
             symbol=symbol,
         ),
@@ -110,10 +116,27 @@ def collect_live(
 
 
 def persist(root: Path, result: CollectionResult) -> None:
+    errors: list[str] = []
     for observation in result.observations:
-        append_observation(root, observation)
+        _store(errors, _writer(append_observation, root, observation))
     for failure in result.failures:
-        append_failure(root, failure)
+        _store(errors, _writer(append_failure, root, failure))
+    if errors:
+        raise RecorderError("; ".join(errors))
+
+
+def _writer[T](write: Callable[[Path, T], bool], root: Path, item: T) -> Callable[[], bool]:
+    def call() -> bool:
+        return write(root, item)
+
+    return call
+
+
+def _store(errors: list[str], write: Callable[[], bool]) -> None:
+    try:
+        write()
+    except RecorderError as error:
+        errors.append(str(error))
 
 
 def _bind[T](function: Callable[[str], T], symbol: str) -> Callable[[], T]:
@@ -130,11 +153,13 @@ def _take(
     provider: str,
     symbol: str | None,
     observed_at: datetime,
-    fetch: Callable[[], Observation | tuple[Observation, Observation]],
+    fetch: Callable[[], Observation],
 ) -> None:
     try:
         fetched = fetch()
-    except (RecorderError, ExchangeGeoBlockedError) as error:
+    except ExchangeBannedError:
+        raise
+    except (RecorderError, MarketDataError, httpx.HTTPError) as error:
         failures.append(
             CollectionFailure(
                 series=series,
@@ -145,7 +170,43 @@ def _take(
             )
         )
         return
-    if isinstance(fetched, tuple):
-        observations.extend(fetched)
-        return
     observations.append(fetched)
+
+
+def _take_book(
+    observations: list[Observation],
+    failures: list[CollectionFailure],
+    symbol: str,
+    observed_at: datetime,
+    fetch: Callable[[], tuple[Observation, Observation]],
+) -> None:
+    try:
+        fetched = fetch()
+    except ExchangeBannedError:
+        raise
+    except (RecorderError, MarketDataError, httpx.HTTPError) as error:
+        for series in ("spread", "depth"):
+            failures.append(
+                CollectionFailure(
+                    series=series,
+                    provider="binance",
+                    observed_at=observed_at,
+                    symbol=symbol,
+                    error=str(error),
+                )
+            )
+        return
+    observations.extend(fetched)
+
+
+def _reject_symbol(failures: list[CollectionFailure], symbol: str, observed_at: datetime) -> None:
+    for series in ("funding", "open_interest", "spread", "depth"):
+        failures.append(
+            CollectionFailure(
+                series=series,
+                provider="binance",
+                observed_at=observed_at,
+                symbol=symbol,
+                error=f"invalid symbol {symbol}",
+            )
+        )
