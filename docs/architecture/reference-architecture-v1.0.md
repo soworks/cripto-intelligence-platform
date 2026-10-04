@@ -203,7 +203,7 @@ class DecisionProvider(Protocol):
         ...
 ```
 
-- BedrockProvider is the v1 implementation.
+- `OpenAIProvider` is the v1 implementation (ADR-0011). `BedrockProvider` is a later adapter behind the same contract.
 - Future providers can implement the same contract without changing
   discovery, policy, ledger, or execution.
 - Model IDs and routing thresholds are configuration, not business

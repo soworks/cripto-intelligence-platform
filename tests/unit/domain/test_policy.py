@@ -361,3 +361,76 @@ def test_accepted_policy_limits_are_finite_positive_and_nested(
     limits = (risk.max_trade_usd, risk.max_daily_trade_usd, risk.max_monthly_trade_usd)
     assert all(isinstance(x, float) and math.isfinite(x) and x > 0 for x in limits)
     assert risk.max_trade_usd <= risk.max_daily_trade_usd <= risk.max_monthly_trade_usd
+
+
+def test_hypotheses_are_separate_from_phase1_placeholders(tmp_path: Path) -> None:
+    policy = load_policy(REPO_POLICY).policy
+    assert policy.universe.minimum_daily_quote_volume_usd == 5_000_000
+    normal = policy.hypotheses.universe.normal
+    assert normal.median_quote_volume_30d_usd == 10_000_000
+    assert normal.minimum_market_cap_usd == 300_000_000
+    assert policy.hypotheses.exits.max_holding_days == policy.strategy.max_holding_days == 56
+    assert policy.hypotheses.regime.risk_off.new_entries is False
+    assert policy.hypotheses.approval.ttl_minutes == 240
+    rewritten = yaml.safe_dump(yaml.safe_load(REPO_POLICY.read_text()))
+    assert load_policy(_write(tmp_path, yaml.safe_load(rewritten))).policy == policy
+
+
+def test_a_schema_v2_file_without_hypotheses_is_rejected(
+    tmp_path: Path, policy_data: dict[str, Any]
+) -> None:
+    del policy_data["hypotheses"]
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("hypotheses", "regime", "hysteresis_days"), "3"),
+        (("hypotheses", "regime", "hysteresis_days"), 0),
+        (("hypotheses", "exits", "forced_exit_triggers"), ["not-a-trigger"]),
+        (("hypotheses", "approval", "ttl_minutes"), 0),
+        (("hypotheses", "universe", "normal", "turnover_min"), 0.9),
+        (("hypotheses", "circuit_breakers", "halt_new_entries_drawdown"), 0.9),
+        (("hypotheses", "exits", "max_holding_days"), 40),
+        (("hypotheses", "universe", "high_risk", "maximum_market_cap_usd"), 200_000_000),
+        (("hypotheses", "regime", "risk_off", "new_entries"), True),
+        (("hypotheses", "universe", "exclusions", "stablecoin_symbols"), ["FDUSD", "FDUSD"]),
+        (("hypotheses", "universe", "high_risk", "minimum_market_cap_usd"), 400_000_000),
+        (("hypotheses", "universe", "manipulation", "binance_volume_share_below"), 0.95),
+        (("hypotheses", "universe", "new_listing", "normal_lane_days"), 90),
+        (
+            ("hypotheses", "fundamentals", "block_if_missing"),
+            ["market_cap", "market_cap", "market_cap"],
+        ),
+        (("hypotheses", "fundamentals", "unlock_pct_circ_14d"), 0.9),
+        (("hypotheses", "regime", "breadth_risk_off"), 0.9),
+        (("hypotheses", "regime", "risk_on", "size_mult"), 0.5),
+        (("hypotheses", "regime", "neutral", "min_score"), 60),
+        (("hypotheses", "exits", "time_stop_days"), 90),
+        (
+            ("hypotheses", "exits", "forced_exit_triggers"),
+            [
+                "delisting_announced",
+                "delisting_announced",
+                "monitoring_tag_added",
+                "regime_risk_off",
+                "unlock_pct_circ_within_7d_ge_0.02",
+            ],
+        ),
+        (
+            ("hypotheses", "approval", "revalidate_on_execute"),
+            ["regime", "regime", "gates", "filters", "portfolio"],
+        ),
+    ],
+)
+def test_hypothesis_boundaries_fail_closed(
+    tmp_path: Path, policy_data: dict[str, Any], path: tuple[str, ...], value: object
+) -> None:
+    cursor = policy_data
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = value
+    with pytest.raises(PolicyError):
+        load_policy(_write(tmp_path, policy_data))

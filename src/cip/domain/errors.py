@@ -32,3 +32,7 @@ class HistoryError(CipError):
 
 class BacktestError(CipError):
     """A backtest input or result is unusable; callers must fail closed."""
+
+
+class RecorderError(CipError):
+    """A provider response cannot become an observation; callers must not invent one."""
