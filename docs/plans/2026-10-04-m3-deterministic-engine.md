@@ -1,7 +1,7 @@
 # M3 — Deterministic engine
 
 **Date:** 2026-10-04
-**Status:** Slices 1–4 are merged. Slice 5 is the regime classifier. No orders, no LLM, no M4 exits, no M7.
+**Status:** Slices 1–5 are merged. Slice 6 is features, score v2, and the information-coefficient study. No orders, no LLM, no M4 exits, no M7.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work and locks the decision schema. KPI formulas and the scan storage layout beyond slice 1 stay in the slice that needs them.
 
@@ -14,7 +14,7 @@ Each slice is one implementation issue. Later slices call the replay contracts i
 3. **Liquidity, manipulation, and the new-listing lane.** 30-day medians, spread and depth, manipulation block. Listing age is the lane `minimum_history_days` already applied in slice 2; this slice calls that assessment instead of copying it. A listing does not create a BUY. This slice.
 4. **Fundamentals.** CoinGecko primary, CMC cross-check, DefiLlama. Missing data is a rejection, not a filled value. This slice.
 5. **Regime.** Hysteresis and the per-regime discovery policy already in `hypotheses`. RISK_OFF produces no BUY. This slice.
-6. **Features, score v2, and the information-coefficient study.** Weights freeze in policy after the study. Liquidity and portfolio fit stay out of the score.
+6. **Features, score v2, and the information-coefficient study.** Weights freeze in policy after the study. Liquidity and portfolio fit stay out of the score. This slice.
 7. **Daily scan.** Discover → gates → features → regime → score → record, after the 00:00 UTC close. Every evaluated symbol, including rejections, gets one decision. The ledger stores the decision key and its SHA-256. Zero provider calls on the score path.
 8. **Forward outcomes.** At 7/14/30/60 days, read the stored decision and later bars. Write an outcome document. Do not change the decision.
 9. **Simulator and baselines.** Event-driven daily replay, equal-weight eligible universe, 1,000-run random baseline with a persisted seed. Uses slices 2, 5, and 6, and the M4 exit contract when that contract exists. M4 still owns exits.
@@ -66,6 +66,14 @@ The raw state uses the hypothesis thresholds. BTC above its 200-day average and 
 Breadth is the share of symbols whose close is above the EMA50 of a contiguous daily tail of at least 50 sessions. A symbol without that tail is left out of the ratio. A present non-positive price rejects the session.
 
 Hysteresis uses `hysteresis_days`. RISK_OFF and any tighter state publish on the session they appear. A looser state publishes only after that many consecutive raw sessions, or it keeps the tighter published state. The first looser session does not publish a regime and does not allow entries. The decision keeps that raw state, and a prior session may have a raw state with nothing published, so the next session can continue the streak. Close equal to the 200-day average is not below it: with narrow breadth that session is unclassified. The discovery fields on the decision are the published state's fields from `hypotheses`. RISK_OFF has `new_entries` false. An acceptance is not a BUY.
+
+## Slice 6 features and score
+
+`measure` reads stored daily bars and caller-supplied tokenomics. It does not call providers and does not fill a missing number with zero. Relative strength is the asset return minus the BTC return over 30 and 90 days, each ending 1, 2, and 3 days before the session, plus the same return divided by the standard deviation of daily returns in that window. A flat window has no volatility-adjusted value. Also stored: EMA20, Wilder ATR at the caller-supplied period, Wilder RSI-14, 7-day return, 90-day beta and correlation to BTC, the session taker-buy ratio, and the 30-day median trade count.
+
+`extension_count` is how many of the three documented triggers are true: more than 2.5 ATR above EMA20, RSI above 78, or a 7-day return above the 95th percentile of the symbols that have one. A zero ATR leaves the count missing. A listing or a feature does not create a BUY.
+
+`combine` applies caller-supplied weights to the volatility-adjusted relative-strength features, the extension count, and the tokenomics fields. The extension weight is always a penalty. An empty weight map is refused. Liquidity and portfolio fit are refused. The study reports Spearman correlation with later excess return for each feature and regime. Fewer than 30 observations produce no coefficient. A complete study still does not choose or write weights; the policy has none until a catalog study can freeze them.
 
 ## Out of this milestone
 
