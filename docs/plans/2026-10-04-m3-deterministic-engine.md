@@ -55,7 +55,7 @@ Normal-lane gates in this slice are rank, circulating ratio, FDV to market cap, 
 
 ## Slice 4 fundamentals
 
-Parsers read CoinGecko market data, a CMC USD quote, and DefiLlama fees. A missing key stays missing. They do not call providers and do not replace a missing number with zero. `assess_fundamentals` uses CoinGecko as the primary cap and supply, checks it against CMC, and requires the base asset's hand-verified CoinGecko id. Unknown unlock percentages are not treated as zero. DefiLlama fees are parsed and are not a gate until the policy has a threshold.
+Parsers read CoinGecko market data, a CMC USD quote, and DefiLlama fees. A missing key stays missing. They do not call providers and do not replace a missing number with zero. Readings reject floats, booleans, negatives, and naive timestamps. `assess_fundamentals` uses CoinGecko as the primary cap and supply, checks it against CMC, and requires the base asset's hand-verified CoinGecko id. A present zero cap, supply, or FDV is invalid, not missing. Total supply is required only when the unlock schedule is unknown; a known schedule does not invent that number. Unknown unlock percentages are not treated as zero. DefiLlama fees are parsed and are not a gate until the policy has a threshold.
 
 ## Out of this milestone
 
