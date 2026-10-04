@@ -65,7 +65,7 @@ The raw state uses the hypothesis thresholds. BTC above its 200-day average and 
 
 Breadth is the share of symbols whose close is above the EMA50 of a contiguous daily tail of at least 50 sessions. A symbol without that tail is left out of the ratio. A present non-positive price rejects the session.
 
-Hysteresis uses `hysteresis_days`. RISK_OFF and any tighter state publish on the session they appear. A looser state publishes only after that many consecutive raw sessions, or it keeps the tighter published state. The first looser session does not publish a regime and does not allow entries. The discovery fields on the decision are the published state's fields from `hypotheses`. RISK_OFF has `new_entries` false. An acceptance is not a BUY.
+Hysteresis uses `hysteresis_days`. RISK_OFF and any tighter state publish on the session they appear. A looser state publishes only after that many consecutive raw sessions, or it keeps the tighter published state. The first looser session does not publish a regime and does not allow entries. The decision keeps that raw state, and a prior session may have a raw state with nothing published, so the next session can continue the streak. Close equal to the 200-day average is not below it: with narrow breadth that session is unclassified. The discovery fields on the decision are the published state's fields from `hypotheses`. RISK_OFF has `new_entries` false. An acceptance is not a BUY.
 
 ## Out of this milestone
 

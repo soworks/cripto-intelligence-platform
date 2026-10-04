@@ -198,6 +198,11 @@ def test_neutral_is_exactly_one_risk_on_clause() -> None:
 def test_price_and_breadth_fail_closed() -> None:
     flat = _series("BTCUSDT", 200)
     assert _classify(btc_bars=flat, prior=_priors("RISK_ON", "RISK_ON", 1)).regime == "NEUTRAL"
+    flat_narrow = _classify(btc_bars=flat, universe_bars=_universe("narrow"))
+    assert flat_narrow.regime is None
+    assert flat_narrow.raw is None
+    assert flat_narrow.reason_codes == ("regime_unclassified",)
+    assert flat_narrow.new_entries is False
     narrow = _classify(
         btc_bars=_series("BTCUSDT", 200, last_close="99"),
         universe_bars=_universe("narrow"),
@@ -224,6 +229,7 @@ def test_price_and_breadth_fail_closed() -> None:
 def test_hysteresis_blocks_a_looser_regime_and_accepts_a_tighter_one() -> None:
     opening = _classify()
     assert opening.regime is None
+    assert opening.raw == "RISK_ON"
     assert opening.reason_codes == ("hysteresis",)
     assert opening.new_entries is False
     confirmed = _classify(prior=_priors("RISK_ON", "RISK_OFF", REGIME.hysteresis_days - 1))
@@ -240,6 +246,7 @@ def test_hysteresis_blocks_a_looser_regime_and_accepts_a_tighter_one() -> None:
         prior=_priors("NEUTRAL", "RISK_OFF", 1),
     )
     assert held.regime == "RISK_OFF"
+    assert held.raw == "NEUTRAL"
     assert "hysteresis" in held.reason_codes
     assert held.new_entries is False
     released = _classify(
@@ -272,6 +279,7 @@ def test_inputs_cannot_look_ahead_or_contradict_the_symbol() -> None:
     with pytest.raises(ValidationError):
         RegimeDecision(
             regime="RISK_OFF",
+            raw="RISK_OFF",
             reason_codes=("risk_off",),
             new_entries=True,
             size_mult=None,
@@ -282,6 +290,7 @@ def test_inputs_cannot_look_ahead_or_contradict_the_symbol() -> None:
     with pytest.raises(ValidationError):
         RegimeDecision(
             regime=None,
+            raw=None,
             reason_codes=("Bad",),
             new_entries=False,
             size_mult=None,
@@ -292,6 +301,7 @@ def test_inputs_cannot_look_ahead_or_contradict_the_symbol() -> None:
     with pytest.raises(ValidationError):
         RegimeDecision(
             regime=None,
+            raw="RISK_ON",
             reason_codes=("hysteresis",),
             new_entries=False,
             size_mult=Decimal("1"),
@@ -302,7 +312,19 @@ def test_inputs_cannot_look_ahead_or_contradict_the_symbol() -> None:
     with pytest.raises(ValidationError):
         RegimeDecision(
             regime="RISK_ON",
+            raw="RISK_ON",
             reason_codes=("hysteresis",),
+            new_entries=True,
+            size_mult=Decimal("1"),
+            min_score=70,
+            require_rs_vs_btc_30d_positive=None,
+            trailing_atr_mult=None,
+        )
+    with pytest.raises(ValidationError):
+        RegimeDecision(
+            regime="RISK_ON",
+            raw=None,
+            reason_codes=("risk_on",),
             new_entries=True,
             size_mult=Decimal("1"),
             min_score=70,
@@ -334,8 +356,82 @@ def test_inputs_cannot_look_ahead_or_contradict_the_symbol() -> None:
     )
 
 
-def test_hypotheses_are_the_thresholds(tmp_path: Path) -> None:
+def _remember(day: date, decision: RegimeDecision, stored: list[PriorSession]) -> None:
+    if decision.raw is None:
+        return
+    stored.append(PriorSession(session=day, raw=decision.raw, published=decision.regime))
+
+
+def _on_day(day: date, prior: tuple[PriorSession, ...], *, tape: str) -> RegimeDecision:
+    if tape == "risk_off":
+        btc = _series("BTCUSDT", 200, close="1", last_close="79", high="100", as_of=day)
+    elif tape == "neutral":
+        btc = _series("BTCUSDT", 200, last_close="99", as_of=day)
+    else:
+        btc = _series("BTCUSDT", 200, last_close="101", as_of=day)
+    universe = {
+        "AAAUSDT": _series("AAAUSDT", 60, last_close="101", as_of=day),
+        "BBBUSDT": _series("BBBUSDT", 60, last_close="101", as_of=day),
+    }
+    return classify(
+        as_of=day,
+        btc_bars=btc,
+        universe_bars=universe,
+        observations=_observations(day),
+        prior=prior,
+        hypotheses=REGIME,
+    )
+
+
+def test_a_decision_is_a_valid_next_prior() -> None:
+    stored: list[PriorSession] = []
+    start = AS_OF - timedelta(days=2)
+    decisions: list[RegimeDecision] = []
+    for offset in range(3):
+        day = start + timedelta(days=offset)
+        decision = _on_day(day, tuple(stored), tape="risk_on")
+        decisions.append(decision)
+        _remember(day, decision, stored)
+    assert [item.regime for item in decisions] == [None, None, "RISK_ON"]
+    assert decisions[0].raw == "RISK_ON"
+    assert decisions[2].new_entries is True
+    stored.clear()
+    shock = _on_day(AS_OF - timedelta(days=3), (), tape="risk_off")
+    assert shock.regime == "RISK_OFF"
+    _remember(AS_OF - timedelta(days=3), shock, stored)
+    loosened: list[RegimeDecision] = []
+    for offset in range(1, 4):
+        day = AS_OF - timedelta(days=3 - offset)
+        decision = _on_day(day, tuple(stored), tape="neutral")
+        loosened.append(decision)
+        _remember(day, decision, stored)
+    assert [item.regime for item in loosened] == ["RISK_OFF", "RISK_OFF", "NEUTRAL"]
+    assert [item.raw for item in loosened] == ["NEUTRAL", "NEUTRAL", "NEUTRAL"]
+    assert loosened[0].new_entries is False
+    assert loosened[2].new_entries is True
+
+
+def test_hypotheses_are_the_thresholds() -> None:
     assert isinstance(REGIME, RegimeHypotheses)
     assert REGIME.hysteresis_days == 3
     published = _classify(prior=_priors("RISK_ON", "RISK_ON", 1))
     assert published.new_entries is REGIME.risk_on.new_entries
+    assert Decimal(1) / Decimal(2) == Decimal(str(REGIME.breadth_risk_on))
+    assert Decimal(3) / Decimal(10) == Decimal(str(REGIME.breadth_risk_off))
+    half = _classify(universe_bars=_universe("half"), prior=_priors("RISK_ON", "RISK_ON", 1))
+    assert half.regime == "RISK_ON"
+    at_floor = {
+        f"S{index:02d}USDT": _series(
+            f"S{index:02d}USDT",
+            60,
+            last_close="101" if index < 3 else "100",
+        )
+        for index in range(10)
+    }
+    touch = _classify(
+        btc_bars=_series("BTCUSDT", 200, last_close="99"),
+        universe_bars=at_floor,
+        prior=_priors("RISK_ON", "RISK_ON", 1),
+    )
+    assert touch.regime is None
+    assert touch.reason_codes == ("regime_unclassified",)
