@@ -226,6 +226,11 @@ def _unix_millis(value: object) -> datetime:
 
 
 def _whole(value: object) -> int:
+    if isinstance(value, str):
+        try:
+            value = Decimal(value)
+        except InvalidOperation as error:
+            raise RecorderError("missing source timestamp") from error
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
         raise RecorderError("missing source timestamp")
     if isinstance(value, Decimal) and value != value.to_integral_value():
