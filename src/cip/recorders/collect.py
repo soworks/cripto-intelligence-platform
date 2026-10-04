@@ -125,18 +125,36 @@ def collect_live(
     )
 
 
-def persist(root: Path, result: CollectionResult) -> None:
-    persist_to(DirectoryStore(root), result)
+def persist(root: Path, result: CollectionResult) -> CollectionResult:
+    return persist_to(DirectoryStore(root), result)
 
 
-def persist_to(store: ObjectStore, result: CollectionResult) -> None:
-    errors: list[str] = []
+def persist_to(store: ObjectStore, result: CollectionResult) -> CollectionResult:
+    """Keep the first payload. A revised point becomes a failure and the cycle finishes."""
+    stored: list[Observation] = []
+    conflicts: list[CollectionFailure] = []
     for observation in result.observations:
-        _store(errors, _call(append_observation_to, store, observation))
-    for failure in result.failures:
+        try:
+            append_observation_to(store, observation)
+        except RecorderError as error:
+            conflicts.append(
+                CollectionFailure(
+                    series=observation.series,
+                    provider=observation.provider,
+                    observed_at=observation.observed_at,
+                    symbol=observation.symbol,
+                    error=str(error),
+                )
+            )
+        else:
+            stored.append(observation)
+    failures = (*result.failures, *conflicts)
+    errors: list[str] = []
+    for failure in failures:
         _store(errors, _call(append_failure_to, store, failure))
     if errors:
         raise RecorderError("; ".join(errors))
+    return CollectionResult(observations=tuple(stored), failures=failures)
 
 
 def _call[T](

@@ -37,12 +37,12 @@ def main(argv: list[str] | None = None) -> int:
                 futures=futures,
                 depth_band=policy.policy.recorders.depth_band,
             )
-        persist(args.output, result)
+        stored = persist(args.output, result)
     except (RecorderError, PolicyError, MarketDataError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(
-        f"observations={len(result.observations)} failures={len(result.failures)} "
+        f"observations={len(stored.observations)} failures={len(stored.failures)} "
         f"output={args.output}"
     )
     return 0
