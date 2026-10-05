@@ -168,6 +168,26 @@ def test_bad_inputs_are_refused() -> None:
     with pytest.raises(ValidationError):
         _model(side="sell", budget_usd=Decimal("1"), fill_price=Decimal("99.925"))
     with pytest.raises(ValidationError):
+        _model(fee_drag_usd=Decimal("200"))
+    with pytest.raises(ValidationError):
+        _model(
+            reason="no_next_bar",
+            fill_price=None,
+            quantity=None,
+            fee_drag_usd=None,
+            budget_usd=Decimal("0"),
+            requested=Decimal("0"),
+        )
+    with pytest.raises(ValidationError):
+        _model(quantity=None)
+    with pytest.raises(ValidationError):
+        _model(
+            reason="no_next_bar",
+            fill_price=None,
+            fee_drag_usd=None,
+            budget_usd=Decimal("0"),
+        )
+    with pytest.raises(ValidationError):
         ShadowFill.model_validate(_document(side=1))
     with pytest.raises(ValidationError):
         ShadowFill.model_validate(_document(budget_usd=1))
@@ -178,3 +198,13 @@ def test_bad_inputs_are_refused() -> None:
         forged = _fill().model_copy(update={"reason": "buy_budget"})
         with pytest.raises(FillError, match="invalid"):
             forged.to_document()
+        leaked = _fill().model_copy(
+            update={
+                "reason": "buy_budget",
+                "quantity": None,
+                "fee_drag_usd": None,
+                "budget_usd": Decimal("0"),
+            }
+        )
+        with pytest.raises(FillError, match="invalid"):
+            leaked.to_document()
