@@ -53,6 +53,15 @@ def test_neutral_and_a_high_beta_shrink_the_size() -> None:
     assert low_beta.size_usd == Decimal("75.00")
 
 
+def test_cents_round_down_and_do_not_lift_a_size_onto_the_floor() -> None:
+    capped = _size(portfolio_usd=Decimal("3333.5"))
+    assert capped.size_usd == Decimal("33.33")
+    assert capped.reason == "sized"
+    under = _size(portfolio_usd=Decimal("2499.9"))
+    assert under.size_usd is None
+    assert under.reason == "below_minimum"
+
+
 def test_a_size_below_the_minimum_is_absent() -> None:
     small = _size(portfolio_usd=Decimal("4000"), regime="NEUTRAL")
     assert small.size_usd is None
