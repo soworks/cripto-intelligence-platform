@@ -1,3 +1,4 @@
+import warnings
 from decimal import Decimal
 from pathlib import Path
 
@@ -103,7 +104,11 @@ def test_a_three_percent_month_and_a_recent_exit_block_the_name() -> None:
 
 
 def test_several_blocks_stay_in_policy_order() -> None:
-    positions = (*tuple(_line(f"A{index}USDT", "L1") for index in range(4)), _line("SOLUSDT", "L1"))
+    positions = (
+        *tuple(_line(f"A{index}USDT", "L1") for index in range(3)),
+        _line("DUSDT", "L1", value="1300"),
+        _line("SOLUSDT", "L1"),
+    )
     decision = _admit(
         positions=positions,
         sector="L1",
@@ -121,6 +126,7 @@ def test_several_blocks_stay_in_policy_order() -> None:
         "monthly_loss",
         "open_position_cap",
         "sector_cap",
+        "beta_exposure",
         "averaging_down",
         "reentry_cooldown",
         "no_size",
@@ -166,3 +172,25 @@ def test_bad_inputs_are_refused() -> None:
         LimitDecision(allowed=False, flatten=True, reasons=("halt_new_entries",))
     with pytest.raises(ValidationError):
         LimitDecision(allowed=False, flatten=False, reasons=())
+    with pytest.raises(ValidationError):
+        LimitDecision.model_validate({"allowed": "on", "flatten": "off", "reasons": []})
+    with pytest.raises(ValidationError):
+        LimitDecision.model_validate({"allowed": 1, "flatten": 0, "reasons": []})
+    with pytest.raises(ValidationError):
+        DiscoveryLine(symbol="ADAUSDT", sector="L1", beta=0.3, value_usd=Decimal("100"))
+    with pytest.raises(ValidationError):
+        DiscoveryLine(symbol="ADAUSDT", sector="L1", beta=Decimal("NaN"), value_usd=Decimal("100"))
+    with pytest.raises(ValidationError):
+        DiscoveryLine(symbol="ADAUSDT", sector="L1", beta=Decimal("1"), value_usd=Decimal("0"))
+    with pytest.raises(ValidationError):
+        DiscoveryLine(symbol="ADAUSDT", sector="L1", beta=Decimal("1"), value_usd=0.3)
+    honest = _admit(positions=(_line("ADAUSDT", "L1", beta="2", value="700"),))
+    assert honest.reasons == ("beta_exposure",)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        forged = _admit().model_copy(update={"allowed": "yes"})
+        with pytest.raises(LimitError, match="invalid"):
+            forged.to_document()
+        copied = _line("ADAUSDT", "L1", beta="2", value="700").model_copy(update={"beta": True})
+        with pytest.raises(LimitError, match="discovery lines"):
+            _admit(positions=(copied,))
