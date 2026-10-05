@@ -1,7 +1,7 @@
 # M4 — Position lifecycle and shadow portfolio
 
 **Date:** 2026-10-05
-**Status:** Slices 1–6 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57), [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59), [#61](https://github.com/soworks/crypto-intelligence-platform/issues/61), [#63](https://github.com/soworks/crypto-intelligence-platform/issues/63), [#65](https://github.com/soworks/crypto-intelligence-platform/issues/65)). Slice 7 is shadow fills. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
+**Status:** Slices 1–7 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57), [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59), [#61](https://github.com/soworks/crypto-intelligence-platform/issues/61), [#63](https://github.com/soworks/crypto-intelligence-platform/issues/63), [#65](https://github.com/soworks/crypto-intelligence-platform/issues/65), [#67](https://github.com/soworks/crypto-intelligence-platform/issues/67)). Slice 8 is the core sleeve. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) is the parent. Implementation issues do not complete it.
 
@@ -15,8 +15,8 @@ Each slice is one implementation issue. Later slices call the portfolio book and
 4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order. [#61](https://github.com/soworks/crypto-intelligence-platform/issues/61). Merged.
 5. **Limits and circuit breakers.** Open-position caps, sector cap, beta-weighted exposure, drawdown halts, loss streak, re-entry cooldown, monthly loss halt. [#63](https://github.com/soworks/crypto-intelligence-platform/issues/63). Merged.
 6. **Symbol filter.** Live `exchangeInfo` filters and an exit simulation after fees. A failed filter skips the name. [#65](https://github.com/soworks/crypto-intelligence-platform/issues/65). Merged.
-7. **Shadow fills.** Next-bar fills, fees, spread, slippage, partial fills. Sells are not blocked by a buy budget. This slice.
-8. **Core sleeve.** Weekly BTC/ETH mix from the existing DCA engine, on the core budget only. The reserve is USDC until a later rule deploys it.
+7. **Shadow fills.** Next-bar fills, fees, spread, slippage, partial fills. Sells are not blocked by a buy budget. [#67](https://github.com/soworks/crypto-intelligence-platform/issues/67). Merged.
+8. **Core sleeve.** Weekly BTC/ETH mix from the existing DCA engine, on the core budget only. The reserve is USDC until a later rule deploys it. This slice.
 9. **Manual pilot executions.** Owner-executed October purchases recorded on `ALPHA_PILOT_2026_10`. They are not executor orders.
 10. **Engine Assurance Scorecard.** Four dimensions, reported separately, read from stored records. A recommendation is not a grade from absolute P&L.
 11. **Prod shadow.** Shared Terraform module, prod stack, and the shadow clock. An execution attempt while SHADOW alarms.
@@ -92,3 +92,13 @@ Shadow fills, paying fees in BNB, dust conversion, the hourly monitor, the score
 ## Out of slice 7
 
 Paying fees in BNB, dust conversion, the hourly monitor, the scorecard, live execution, and Score v2 weights. Applying the fill as a position transition is a later caller.
+
+## Slice 8
+
+`plan_core_week` splits `core_monthly_usd` across the caller's week count, then splits that week's dollars with the DCA engine's `allocate` and `core_mix`. It does not read `starting_value_usd`. It does not spend the discovery budget. `reserve_deployed_usd` is zero: the reserve stays USDC. The document is `week_index`, `week_count`, `btc_usd`, `eth_usd`, and `reserve_deployed_usd`. It has no quantity and no order id.
+
+The week index is 1-based and must fall inside the count. The first weeks take an equal cent share of the monthly core, rounded half up. The last week takes the residual, so the month sums to the published core dollars. On the repository policy, four weeks are 98.00 BTC and 42.00 ETH, and those four weeks sum to 392.00 and 168.00. One week deploys the whole core month. A count below one, an index outside that count, or a share that rounds to nothing is refused. The taker fee is not charged here, because this note does not turn the dollars into coins.
+
+## Out of slice 8
+
+Band rebalancing, reserve deployment, coin quantities, a shadow fill of the core legs, the hourly monitor, the scorecard, live execution, and Score v2 weights. October pilot capital is not this budget.
