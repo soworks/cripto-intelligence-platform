@@ -68,3 +68,7 @@ class FilterError(CipError):
 
 class FillError(CipError):
     """A shadow fill cannot be priced; callers must not invent an order."""
+
+
+class CoreError(CipError):
+    """A core week cannot be planned; callers must not invent an order."""
