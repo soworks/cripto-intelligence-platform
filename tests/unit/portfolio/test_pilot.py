@@ -71,6 +71,8 @@ def test_a_purchase_outside_the_pilot_is_refused() -> None:
         _record(symbol="btcusdt")
     with pytest.raises(PilotError, match="non-negative"):
         _record(spent_before_usd=Decimal("-1"))
+    with pytest.raises(PilotError, match="non-negative"):
+        _record(spent_before_usd=Decimal("-0"))
     with pytest.raises(PilotError, match="positive"):
         _record(quantity=Decimal("0"))
     with pytest.raises(PilotError, match="positive"):
@@ -123,6 +125,8 @@ def test_a_document_that_is_not_a_pilot_purchase_is_refused() -> None:
         PilotExecution.model_validate(_raw(quote_usd=Decimal("-1")))
     with pytest.raises(ValidationError):
         PilotExecution.model_validate(_raw(spent_before_usd=Decimal("-0.01")))
+    with pytest.raises(ValidationError):
+        PilotExecution.model_validate(_raw(spent_before_usd=Decimal("-0")))
     with pytest.raises(ValidationError):
         PilotExecution.model_validate(_raw(quote_usd=Decimal("500.01")))
     with pytest.raises(ValidationError):

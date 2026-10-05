@@ -70,7 +70,7 @@ class PilotExecution(_Strict):
             raise ValueError("the purchase is inside the October pilot")
         if self.quantity <= 0 or self.quote_usd <= 0:
             raise ValueError("the purchase is positive")
-        if self.spent_before_usd < 0:
+        if self.spent_before_usd < 0 or self.spent_before_usd.is_signed():
             raise ValueError("pilot spend is non-negative")
         if self.spent_before_usd + self.quote_usd > _CAP:
             raise ValueError("the purchase stays inside the pilot capital")
@@ -118,7 +118,7 @@ def record_pilot_execution(
         raise PilotError("symbol must be an uppercase ticker")
     if day < _START or day > _END:
         raise PilotError("the purchase is inside the October pilot")
-    if spent < 0:
+    if spent < 0 or spent.is_signed():
         raise PilotError("pilot spend is non-negative")
     if spent + paid > _CAP:
         raise PilotError("the purchase stays inside the pilot capital")
