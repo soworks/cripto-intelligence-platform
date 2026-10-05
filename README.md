@@ -1,223 +1,130 @@
-# Crypto Intelligence Platform (cip)
+# Crypto Intelligence Platform
 
-AWS-native research platform for Binance Spot. It records deterministic
-recommendations from stored market history and a versioned policy. The
-operating mode is **SHADOW**. A `BUY` is a recommendation. Execution flags
-fail closed. This repository has no live executor.
+CIP keeps a research book for Binance spot. Each day it writes what it would
+recommend, and why, from prices and signals that were already stored. It does
+not send those notes to the exchange.
 
-The target design remains
-[`docs/architecture/reference-architecture-v1.0.md`](docs/architecture/reference-architecture-v1.0.md).
-This page describes the engines under `src/cip` and the dev pipeline that
-runs today.
+A buy in this book is a suggestion with the evidence attached. Cash, and a
+decision not to buy, are valid outcomes. The platform is running in shadow
+mode: it observes and records. There is no live trader in this repository.
 
-- Roadmap: [`docs/plans/2026-10-03-roadmap.md`](docs/plans/2026-10-03-roadmap.md)
-- Position lifecycle: [`docs/plans/2026-10-05-m4-position-lifecycle.md`](docs/plans/2026-10-05-m4-position-lifecycle.md)
-- ADRs: [`docs/adr/`](docs/adr/)
+## How a session becomes a note
 
-## Boundary
+After a trading session closes, CIP reads that session from its own history.
+It does not go back to the exchange to fill in gaps. If something required is
+missing, the coin is refused.
 
-The repository policy sets `execution.mode` to `SHADOW`. SSM flags that cannot
-be read become SHADOW, with trading disabled and the kill switch on. Market
-data in AWS uses `https://data-api.binance.vision` from us-east-1. A host
-response of 418 aborts the call. A 451 is recorded as a failure.
+It starts with the market mood. Bitcoin, the rest of the universe, and a few
+market-wide readings (such as Bitcoin's share of the market and futures
+funding) decide whether new ideas are even welcome.
 
-Score v2 applies only weights the caller supplies. With no weights the symbol
-is `INELIGIBLE` and the reason is `score_weights_not_frozen`. The information
-coefficient study reports coefficients and does not choose weights.
+Then it walks each coin in that day's snapshot:
 
-The portfolio book copies sleeve budgets from policy. It does not turn the
-starting value into coin quantities. Manual off-exchange lines are optional,
-and an empty list is valid. Holdings stay approximate until the owner supplies
-an inventory. Sleeve cash may be missing. Missing cash is not zero.
-
-A size, a limit decision, a symbol screen, a named exit, and a shadow fill are
-documents. They carry no order id. A later caller applies a position
-transition.
-
-## Scheduled scan skeleton
-
-Dev runs an hourly EventBridge schedule into a Step Functions Standard state
-machine. The machine records the run. It does not score symbols. The strategy
-timeframe is the daily close. Switching this schedule to that close is still
-open on the roadmap.
+1. Is the coin eligible, liquid enough, and acceptable on the basic checks?
+2. If it is, can it be ranked? Ranking runs only when the caller brings the
+   score weights. Those weights are not settled yet, so a normal scan records
+   that the coin cannot be scored. CIP will not invent a ranking to produce a
+   buy.
+3. If a coin does clear the bar, the note is a buy recommendation. Otherwise
+   the note says it was scored and held back, and why.
 
 ```mermaid
 flowchart TD
-  clock["EventBridge Scheduler, hourly"] --> sfn["Step Functions scan skeleton"]
-  flags["SSM execution flags"] --> start["start_scan"]
-  policy["Versioned policy"] --> start
-  sfn --> start
-  start --> done["complete_scan"]
-  start -->|error| failed["record_failure"]
-  done -->|error| failed
-  start --> ledger["Append-only ledger"]
-  done --> ledger
-  failed --> ledger
+  close["The session closes"] --> history["Read the stored history"]
+  history --> mood["Describe the market mood"]
+  mood --> coin["Look at each coin"]
+  coin --> gates{"Eligible and liquid?"}
+  gates -->|no| refused["Write the refusal and the reason"]
+  gates -->|yes| weights{"Are the score weights settled?"}
+  weights -->|not yet| unscored["Write that it cannot be scored"]
+  weights -->|yes| rank{"Does it clear the bar?"}
+  rank -->|no| held["Write that it was considered and held back"]
+  rank -->|yes| buy["Write a buy recommendation"]
 ```
 
-Ledger types on this path are `SCAN_STARTED`, `SCAN_COMPLETED`, and
-`PIPELINE_FAILED`. The same hour, a recorder Lambda appends observations for
-BTC dominance, stablecoin supply, futures funding, open interest, and spot
-depth. A failed fetch is a failure record, and it is not a bar.
+The original note stays as it was written. Later, CIP can attach what the coin
+did after one week, two weeks, one month, and two months. Those results sit
+beside the decision. They do not rewrite it.
 
-## Daily decision record
+## What the book keeps around a recommendation
 
-`run_daily_scan` evaluates one closed session from stored inputs. It does not
-call a provider. Each snapshot symbol gets one immutable decision. Forward
-outcomes at 7, 14, 30, and 60 days are written beside that decision after the
-horizon has elapsed. The outcome does not rewrite the decision.
+The recommendation is the decision. Around it, the book can keep the notes a
+careful portfolio would want. Each one is its own page. None of them is an
+order.
+
+The portfolio page records how capital is split, plus any coins the owner has
+typed in by hand. The owner has not supplied a definitive inventory yet, so
+holdings stay approximate. Cash that has not been entered is left blank. Blank
+is not zero.
+
+From there the book can also record:
+
+- how many dollars a discovery position would be, or that it is too small to take
+- whether the risk limits would allow a new entry
+- whether the exchange's own rules would accept the coin, including room to get out after fees
+- which exit rule, if any, would apply to an open position
+- what the next morning's open would have implied as a price, after fees and a little slippage
+
+A missing next-day open is not turned into a fill. A buy that would spend past
+the day's or the month's buy budget is not filled. A sell is still priced,
+because getting out is not blocked by the budget for new buys.
+
+A position can move from proposed, to approved, to open, and eventually to
+closed. A proposal that is not taken can close without ever opening. Every
+move is recorded. The position page does not carry an order id.
 
 ```mermaid
-flowchart TD
-  inputs["Stored snapshot, bars, observations, and candidate packets"] --> scan["Daily scan"]
-  scan --> regime["Regime from BTC, the universe, and observations"]
-  regime --> symbol["Each snapshot symbol"]
-  symbol --> features["Daily features"]
-  features --> gates["Market eligibility, liquidity, and fundamentals"]
-  gates -->|missing or refused| ineligible["INELIGIBLE"]
-  gates -->|accepted| weights{"Caller supplied score weights?"}
-  weights -->|no| unfrozen["INELIGIBLE, weights not frozen"]
-  weights -->|yes| rank["Score v2 and rank"]
-  rank -->|risk-off, weak relative strength, or below the bar| scored["SCORED"]
-  rank -->|clears the bar| buy["BUY recommendation"]
-  ineligible --> record["Decision record and ledger event"]
-  unfrozen --> record
-  scored --> record
-  buy --> record
-  record --> outcomes["Outcomes after 7, 14, 30, and 60 days"]
+flowchart LR
+  book["Portfolio book"] --> idea["Buy recommendation"]
+  idea --> size["How large"]
+  idea --> limits["Whether limits allow it"]
+  idea --> screen["Whether the exchange would accept it"]
+  idea --> exit["When the rules would get out"]
+  idea --> fill["What the next open would have paid"]
 ```
 
-The `BUY` reason code is `buy_recommendation`. The decision schema labels a
-cohort `BACKTEST`, `ALPHA_PILOT_2026_10`, `SHADOW`, or `LIVE`. The deployed
-flags and the policy mode stay SHADOW.
+## How the capital is split
 
-## Portfolio lifecycle
+The published policy keeps three sleeves apart so they do not spend each
+other's money.
 
-These functions share the policy. A position also shares one decision id.
-They are separate calls. The repository does not chain them into an order.
+Most of a contribution is the core: Bitcoin and Ethereum, about seventy
+percent Bitcoin and thirty percent Ethereum inside that sleeve. That sleeve is
+a schedule, not a scored idea. A smaller share is discovery, the coins outside
+that pair, and that is the sleeve with the tight risk limits. The rest is a
+reserve that stays in USDC until a later rule says how to use it.
 
-The book file is `portfolio/date={session}/book.json`. The same bytes are a
-no-op. A different payload is refused.
+October 2026 is a short pilot with its own capital. It is not the normal
+monthly contribution, and thirteen days is not evidence for or against the
+strategy. From November, the published contribution is 800 dollars a month.
+The book is never required to spend money just because it is available.
 
-```mermaid
-flowchart TD
-  policy["Policy sleeve budgets"] --> book["Portfolio book"]
-  lines["Optional manual off-exchange holdings"] --> book
-  book --> stored["Point-in-time book document"]
-```
+## What is running
 
-A position follows one decision. `position_id` is the SHA-256 of that decision
-id. The state row is `PK=POSITION#<id>`, `SK=STATE`. Every move is one
-`POSITION_TRANSITIONED` ledger event in the same transaction. The record has
-no quantity.
+The research record is in place: stored history, one decision per coin for a
+closed session, the portfolio book, position states, and the notes for size,
+limits, exchange rules, exits, and shadow prices.
 
-```mermaid
-stateDiagram-v2
-  [*] --> PROPOSED
-  PROPOSED --> APPROVED
-  PROPOSED --> CLOSED
-  APPROVED --> ENTRY_PENDING
-  APPROVED --> CLOSED
-  ENTRY_PENDING --> OPEN
-  ENTRY_PENDING --> CLOSED
-  OPEN --> PARTIAL_EXIT
-  OPEN --> EXIT_PENDING
-  PARTIAL_EXIT --> EXIT_PENDING
-  EXIT_PENDING --> CLOSED
-```
+An hourly job in the dev environment records that a cycle started and
+finished. It does not rank coins. Ranking belongs to the daily decision, and
+only from stored inputs.
 
-A proposal can reach `CLOSED` without opening. An open position reaches
-`CLOSED` only through `EXIT_PENDING`. `CLOSED` has no next state.
+Still ahead: writing the weekly Bitcoin and Ethereum purchases into the book,
+a place to record the owner's own October buys, a scorecard that judges the
+research on more than profit and loss, and a production shadow environment.
+The score weights stay unset until the evidence can support them.
 
-Entry and exit research each return their own document:
-
-```mermaid
-flowchart TD
-  facts["Caller facts and the published policy"] --> size["Sizing"]
-  facts --> limits["Limits and circuit breakers"]
-  info["Caller exchangeInfo for one symbol"] --> screen["Symbol filter"]
-  prices["Stored prices on an open position"] --> named["Exit name"]
-  nxt["Next session open"] --> fill["Shadow fill"]
-  size --> out["Record with no order id"]
-  limits --> out
-  screen --> out
-  named --> out
-  fill --> out
-```
-
-- **Sizing** returns dollars, or no size when the result is below the minimum, the regime is risk-off, or the regime is missing.
-- **Limits** allow a new discovery entry only when every check is clear. A missing fact is refused. A flatten name is a review. It is not a sell.
-- **Symbol filter** reads the caller's current `exchangeInfo`. It does not fetch the exchange. A name that cannot trade, quote, tick, or exit after the taker fee is skipped.
-- **Exits** name at most one rule for `OPEN` or `PARTIAL_EXIT`: a forced trigger, the binding stop, max hold, the time stop, or a partial take-profit. No name is a hold. The result has no price and no quantity.
-- **Shadow fills** price one buy or one sell at the next session open. A missing open, a zero quantity, or a buy that would exceed the daily or monthly buy budget produces no fill. A sell is priced anyway and does not spend the buy budget. Cost is the taker fee, half the caller spread, and the caller slippage. A smaller quantity is a partial fill.
-
-Applying a fill or an exit name as a position transition is a later caller.
-The lifecycle plan's remaining slices are the core sleeve, manual pilot
-execution records, the engine assurance scorecard, and prod shadow. The hourly
-position monitor is still a roadmap item.
-
-## Engines
-
-```mermaid
-flowchart TB
-  flags["SSM flags"] --> handlers
-  domain["Domain policy and events"] --> handlers
-  domain --> evaluation
-  domain --> portfolio
-  domain --> backtest
-
-  subgraph handlers ["Handlers"]
-    pipeline["Scan skeleton"]
-    probe["Market probe"]
-    rec["Recorders"]
-  end
-
-  subgraph engines ["Engines"]
-    market["Market data"]
-    history["History"]
-    evaluation["Evaluation"]
-    portfolio["Portfolio"]
-    backtest["Backtest"]
-  end
-
-  market --> probe
-  market --> rec
-  history --> evaluation
-  history --> backtest
-  rec --> evaluation
-  evaluation -->|"decision id"| portfolio
-
-  handlers --> ledger["DynamoDB ledger"]
-  evaluation --> ledger
-  portfolio --> ledger
-  portfolio --> state["DynamoDB position state"]
-  history --> s3["S3 history and snapshots"]
-  rec --> s3
-```
-
-| Engine | Package | What it does |
-| --- | --- | --- |
-| Market data | `cip.adapters` | Public Binance client, weight-aware limiter, and parsers for exchange info, tickers, klines, and depth |
-| History | `cip.history` | Survivorship-free daily klines, listing continuity, and the point-in-time universe |
-| Evaluation | `cip.evaluation` | Daily scan, features, gates, regime, score, decision store, outcomes, and the coefficient study |
-| Portfolio | `cip.portfolio` | Book, position state, exits, sizing, limits, symbol filter, and shadow fills |
-| Persistence | `cip.persistence` | Append-only ledger writes, and the position row plus its ledger event in one transaction |
-| Backtest | `cip.backtest` | BTC and BTC/ETH DCA replay, portfolio metrics, and a simulator that calls eligibility, score, and exit contracts |
-| Handlers | `cip.handlers` | Lambda entry points for the scan skeleton, the market probe, and the recorders |
-
-`cip.domain` holds the policy and ledger events. `cip.recorders` collects the
-forward series the regime classifier reads. `cip.config` reads the SSM flags.
-
-Dev storage follows ADR-0005: a versioned S3 bucket for snapshots, history,
-and observations, plus DynamoDB tables for the ledger and for position state.
-A counters table is provisioned. Daily and monthly trade-dollar counters are
-still a roadmap item, so a shadow fill takes the buy-spend figures from the
-caller.
+Diagrams of the flows and the engines are in the
+[implemented solution](docs/architecture/implemented-solution.md).
+The longer target design is the
+[reference architecture](docs/architecture/reference-architecture-v1.0.md).
+The [roadmap](docs/plans/2026-10-03-roadmap.md) lists what is done and what is
+still open.
 
 ## Develop
 
 ```text
-make install   # uv sync and pre-commit
-make check     # ruff, mypy, pytest
-make build     # Lambda artifact in build/cip-lambda.zip
+make install
+make check
+make build
 ```
