@@ -48,3 +48,7 @@ class PortfolioError(CipError):
 
 class PositionError(CipError):
     """A position cannot change state; callers must not invent an order."""
+
+
+class ExitError(CipError):
+    """An exit cannot be named; callers must not invent a fill."""
