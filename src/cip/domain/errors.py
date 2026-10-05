@@ -52,3 +52,7 @@ class PositionError(CipError):
 
 class ExitError(CipError):
     """An exit cannot be named; callers must not invent a fill."""
+
+
+class SizeError(CipError):
+    """A position cannot be sized; callers must not invent an order."""
