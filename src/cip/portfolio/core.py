@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, model_validator
 
 from cip.backtest.schedule import allocate
-from cip.domain.errors import CoreError
+from cip.domain.errors import BacktestError, CoreError
 from cip.domain.policy import LoadedPolicy
 
 _CENT = Decimal("0.01")
@@ -50,15 +50,24 @@ class CoreWeek(_Strict):
             raise ValueError("a core week is positive")
         if self.btc_usd + self.eth_usd != self.core_usd:
             raise ValueError("the mix spends the week's core budget")
-        if self.reserve_deployed_usd != 0:
+        if self.reserve_deployed_usd != 0 or self.reserve_deployed_usd.is_signed():
             raise ValueError("the reserve stays in USDC")
         return self
 
-    def to_document(self) -> dict[str, Any]:
+    def to_document(self, policy: LoadedPolicy) -> dict[str, Any]:
         try:
             checked = CoreWeek.model_validate(self.model_dump())
         except ValidationError as error:
             raise CoreError("core week is invalid") from error
+        expected = plan_core_week(
+            week_index=checked.week_index,
+            week_count=checked.week_count,
+            policy=policy,
+        )
+        planned = (checked.btc_usd, checked.eth_usd, checked.core_usd)
+        fresh = (expected.btc_usd, expected.eth_usd, expected.core_usd)
+        if planned != fresh:
+            raise CoreError("core week is invalid")
         return {
             "week_index": checked.week_index,
             "week_count": checked.week_count,
@@ -87,7 +96,10 @@ def plan_core_week(*, week_index: int, week_count: int, policy: LoadedPolicy) ->
     mix = {
         symbol: Decimal(str(weight)) for symbol, weight in policy.policy.portfolio.core_mix.items()
     }
-    legs = allocate(budget, mix)
+    try:
+        legs = allocate(budget, mix)
+    except BacktestError as error:
+        raise CoreError("a weekly core share is positive") from error
     return CoreWeek(
         week_index=index,
         week_count=count,

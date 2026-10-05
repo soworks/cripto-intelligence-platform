@@ -26,7 +26,7 @@ def test_four_weeks_split_the_core_budget_and_leave_the_reserve_in_usdc() -> Non
     assert planned.btc_usd == Decimal("98.00")
     assert planned.eth_usd == Decimal("42.00")
     assert planned.reserve_deployed_usd == Decimal("0.00")
-    document = planned.to_document()
+    document = planned.to_document(POLICY)
     assert set(document) == _KEYS
     assert document["btc_usd"] == "98.00"
     assert document["eth_usd"] == "42.00"
@@ -58,7 +58,7 @@ def test_the_week_uses_the_dca_allocator_on_the_core_budget_only() -> None:
     assert planned.btc_usd == legs["BTCUSDT"]
     assert planned.eth_usd == legs["ETHUSDT"]
     assert planned.btc_usd + planned.eth_usd == Decimal("140.00")
-    assert "discovery" not in planned.to_document()
+    assert "discovery" not in planned.to_document(POLICY)
 
 
 def test_one_week_deploys_the_whole_core_month() -> None:
@@ -99,6 +99,8 @@ def test_a_share_that_rounds_away_is_refused() -> None:
         _week(week_count=10**30)
     with pytest.raises(CoreError, match="positive"):
         _week(week_count=56001)
+    with pytest.raises(CoreError, match="positive"):
+        _week(week_count=56000)
 
 
 def _raw(**overrides: object) -> dict[str, object]:
@@ -141,9 +143,26 @@ def test_a_copied_reserve_deployment_is_refused() -> None:
         warnings.simplefilter("ignore", UserWarning)
         copied = planned.model_copy(update={"reserve_deployed_usd": Decimal("80.00")})
     with pytest.raises(CoreError, match="invalid"):
-        copied.to_document()
+        copied.to_document(POLICY)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         drifted = planned.model_copy(update={"btc_usd": Decimal("99.00")})
     with pytest.raises(CoreError, match="invalid"):
-        drifted.to_document()
+        drifted.to_document(POLICY)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        remixed = planned.model_copy(
+            update={"btc_usd": Decimal("100.00"), "eth_usd": Decimal("40.00")}
+        )
+    with pytest.raises(CoreError, match="invalid"):
+        remixed.to_document(POLICY)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        shortened = planned.model_copy(update={"week_count": 1})
+    with pytest.raises(CoreError, match="invalid"):
+        shortened.to_document(POLICY)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        signed = planned.model_copy(update={"reserve_deployed_usd": Decimal("-0.00")})
+    with pytest.raises(CoreError, match="invalid"):
+        signed.to_document(POLICY)
