@@ -76,3 +76,7 @@ class CoreError(CipError):
 
 class PilotError(CipError):
     """A pilot purchase cannot be recorded; callers must not invent an order."""
+
+
+class ScorecardError(CipError):
+    """A scorecard cannot grade a recommendation; callers must not collapse the results."""
