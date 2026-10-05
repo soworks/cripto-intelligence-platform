@@ -6,19 +6,55 @@ import json
 import os
 import re
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from cip.domain.errors import PortfolioError
 from cip.domain.policy import LoadedPolicy
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_POLICY_SHA = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
+_BOOK_FIELDS = frozenset(
+    {
+        "schema_version",
+        "session",
+        "recorded_at",
+        "policy_version",
+        "git_sha",
+        "holdings_are_approximate",
+        "core_usd",
+        "discovery_usd",
+        "reserve_usd",
+        "core_monthly_usd",
+        "discovery_monthly_usd",
+        "reserve_monthly_usd",
+        "holdings",
+    }
+)
+_HOLDING_FIELDS = frozenset({"symbol", "quantity", "venue", "provenance"})
 SCHEMA_VERSION: Literal[1] = 1
+
+
+def _exact_type(kind: type[object]) -> BeforeValidator:
+    def check(value: object) -> object:
+        if type(value) is not kind:
+            raise ValueError(f"must be a {kind.__name__}")
+        return value
+
+    return BeforeValidator(check)
 
 
 def _finite_decimal(value: object) -> Decimal:
@@ -63,7 +99,7 @@ class _Strict(BaseModel):
 
 
 class ManualHolding(_Strict):
-    """One owner-entered line. A missing quantity stays missing."""
+    """One owner-entered line. Quantity is required and positive."""
 
     symbol: str
     quantity: Annotated[Decimal, BeforeValidator(_positive_decimal)]
@@ -81,12 +117,12 @@ class ManualHolding(_Strict):
 class PortfolioBook(_Strict):
     """Stored sleeves and manual holdings. This is not an order."""
 
-    schema_version: Literal[1] = SCHEMA_VERSION
+    schema_version: Annotated[Literal[1], _exact_type(int)] = SCHEMA_VERSION
     session: date
     recorded_at: datetime
-    policy_version: str = Field(min_length=64, max_length=64)
+    policy_version: str
     git_sha: str
-    holdings_are_approximate: bool
+    holdings_are_approximate: Annotated[bool, _exact_type(bool)]
     core_usd: Annotated[Decimal | None, BeforeValidator(_optional_balance)]
     discovery_usd: Annotated[Decimal | None, BeforeValidator(_optional_balance)]
     reserve_usd: Annotated[Decimal | None, BeforeValidator(_optional_balance)]
@@ -100,6 +136,13 @@ class PortfolioBook(_Strict):
     def _recorded(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() != timedelta(0):
             raise ValueError("recorded_at must be timezone-aware UTC")
+        return value
+
+    @field_validator("policy_version")
+    @classmethod
+    def _policy_version(cls, value: str) -> str:
+        if _POLICY_SHA.fullmatch(value) is None:
+            raise ValueError("policy_version must be 64 lowercase hex characters")
         return value
 
     @field_validator("git_sha")
@@ -145,20 +188,20 @@ class PortfolioBook(_Strict):
 
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> Self:
-        holdings = document.get("holdings", [])
-        if not isinstance(holdings, list):
-            raise ValueError("holdings are a list")
-        session = date.fromisoformat(str(document["session"]))
-        recorded = datetime.fromisoformat(str(document["recorded_at"]))
-        if recorded.tzinfo is not None:
-            recorded = recorded.astimezone(UTC)
+        if set(document) != _BOOK_FIELDS:
+            raise ValueError("portfolio document keys are fixed")
+        holdings = document["holdings"]
+        if not isinstance(holdings, list) or any(
+            not isinstance(item, dict) or set(item) != _HOLDING_FIELDS for item in holdings
+        ):
+            raise ValueError("portfolio document keys are fixed")
         return cls(
             schema_version=document["schema_version"],
-            session=session,
-            recorded_at=recorded,
-            policy_version=str(document["policy_version"]),
-            git_sha=str(document["git_sha"]),
-            holdings_are_approximate=bool(document["holdings_are_approximate"]),
+            session=_canonical_date(document["session"]),
+            recorded_at=_canonical_utc(document["recorded_at"]),
+            policy_version=document["policy_version"],
+            git_sha=document["git_sha"],
+            holdings_are_approximate=document["holdings_are_approximate"],
             core_usd=document["core_usd"],
             discovery_usd=document["discovery_usd"],
             reserve_usd=document["reserve_usd"],
@@ -207,10 +250,14 @@ def book_key(session: date) -> str:
 
 def write_book(root: Path, book: PortfolioBook) -> str:
     """Write the book once. The same document is a no-op. A different document is refused."""
-    key = book_key(book.session)
+    try:
+        checked = PortfolioBook.model_validate(book.model_dump())
+    except ValidationError as error:
+        raise PortfolioError("portfolio book is invalid") from error
+    key = book_key(checked.session)
     path = root / key
     _require_inside(root / "portfolio", path)
-    _create(path, _body(book.to_document()))
+    _create(path, _body(checked.to_document()))
     return key
 
 
@@ -227,6 +274,30 @@ def read_book(root: Path, session: date) -> PortfolioBook:
     if book.session != session:
         raise PortfolioError("portfolio book is for a different session")
     return book
+
+
+def _canonical_date(value: object) -> date:
+    if not isinstance(value, str):
+        raise ValueError("session must be YYYY-MM-DD")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("session must be YYYY-MM-DD") from error
+    if parsed.isoformat() != value:
+        raise ValueError("session must be YYYY-MM-DD")
+    return parsed
+
+
+def _canonical_utc(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("recorded_at must be canonical UTC")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("recorded_at must be canonical UTC") from error
+    if parsed.isoformat() != value:
+        raise ValueError("recorded_at must be canonical UTC")
+    return parsed
 
 
 def _money(value: Decimal | None) -> str | None:
