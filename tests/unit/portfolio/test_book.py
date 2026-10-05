@@ -169,6 +169,80 @@ def test_bad_manual_inputs_are_refused() -> None:
         _open(git_sha="abc")
 
 
+def test_a_bad_document_is_not_loaded_as_a_different_book() -> None:
+    book = _open()
+    document = book.to_document()
+    document["holdings_are_approximate"] = "false"
+    with pytest.raises(ValidationError):
+        PortfolioBook.from_document(document)
+    incomplete = book.to_document()
+    del incomplete["holdings"]
+    with pytest.raises(ValueError, match="keys are fixed"):
+        PortfolioBook.from_document(incomplete)
+    extra = book.to_document()
+    extra["order_id"] = "1"
+    with pytest.raises(ValueError, match="keys are fixed"):
+        PortfolioBook.from_document(extra)
+    flagged = book.to_document()
+    flagged["schema_version"] = True
+    with pytest.raises(ValidationError, match="int"):
+        PortfolioBook.from_document(flagged)
+    numbered = book.to_document()
+    numbered["session"] = 20261005
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        PortfolioBook.from_document(numbered)
+    compact = book.to_document()
+    compact["session"] = "20261005"
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        PortfolioBook.from_document(compact)
+    unbound = book.to_document()
+    unbound["policy_version"] = "G" * 64
+    with pytest.raises(ValidationError, match="policy_version"):
+        PortfolioBook.from_document(unbound)
+    shifted = book.to_document()
+    shifted["recorded_at"] = "2026-10-05T07:00:00-05:00"
+    with pytest.raises(ValidationError, match="UTC"):
+        PortfolioBook.from_document(shifted)
+    zulu = book.to_document()
+    zulu["recorded_at"] = "2026-10-05T12:00:00Z"
+    with pytest.raises(ValueError, match="canonical UTC"):
+        PortfolioBook.from_document(zulu)
+    holding = ManualHolding(
+        symbol="BTCUSDT", quantity=Decimal("1"), venue="off_exchange", provenance="owner"
+    )
+    lined = _open(holdings=(holding,)).to_document()
+    lined["holdings"][0]["order_id"] = "1"
+    with pytest.raises(ValueError, match="keys are fixed"):
+        PortfolioBook.from_document(lined)
+    lined = _open(holdings=(holding,)).to_document()
+    lined["holdings"] = ["BTCUSDT"]
+    with pytest.raises(ValueError, match="keys are fixed"):
+        PortfolioBook.from_document(lined)
+    broken_day = book.to_document()
+    broken_day["session"] = "not-a-date"
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        PortfolioBook.from_document(broken_day)
+    broken_time = book.to_document()
+    broken_time["recorded_at"] = 1
+    with pytest.raises(ValueError, match="canonical UTC"):
+        PortfolioBook.from_document(broken_time)
+    broken_clock = book.to_document()
+    broken_clock["recorded_at"] = "not-a-time"
+    with pytest.raises(ValueError, match="canonical UTC"):
+        PortfolioBook.from_document(broken_clock)
+
+
+def test_an_invalid_copy_is_not_stored(tmp_path: Path) -> None:
+    book = _open()
+    finished = book.model_copy(update={"holdings_are_approximate": False})
+    with pytest.raises(PortfolioError, match="invalid"):
+        write_book(tmp_path, finished)
+    negative = book.model_copy(update={"core_usd": Decimal("-1")})
+    with pytest.raises(PortfolioError, match="invalid"):
+        write_book(tmp_path, negative)
+    assert not (tmp_path / book_key(book.session)).exists()
+
+
 def test_a_store_path_cannot_escape_and_a_create_race_keeps_the_bytes(tmp_path: Path) -> None:
     with pytest.raises(PortfolioError, match="escapes"):
         book_module._require_inside(tmp_path / "portfolio", tmp_path / "book.json")
