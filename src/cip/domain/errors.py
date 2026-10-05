@@ -56,3 +56,7 @@ class ExitError(CipError):
 
 class SizeError(CipError):
     """A position cannot be sized; callers must not invent an order."""
+
+
+class LimitError(CipError):
+    """A limit cannot be judged; callers must not invent an order."""
