@@ -40,3 +40,7 @@ class RecorderError(CipError):
 
 class EvaluationError(CipError):
     """A decision or outcome cannot be stored; callers must not rewrite the original."""
+
+
+class PortfolioError(CipError):
+    """A portfolio book cannot be stored; callers must not invent holdings."""
