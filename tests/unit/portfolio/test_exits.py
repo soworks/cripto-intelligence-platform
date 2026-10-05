@@ -42,15 +42,14 @@ def test_the_initial_stop_uses_the_tighter_of_atr_and_the_percent_cap() -> None:
     assert capped is not None
     assert capped.rule == "initial_stop"
     assert _name(atr=Decimal("10"), mark_price=Decimal("85.01")) is None
-    assert "order_id" not in capped.to_document()
-    assert "quantity" not in capped.to_document()
-    assert "fill" not in capped.to_document()
+    assert set(capped.to_document()) == {"rule", "reason", "triggers"}
 
 
 def test_a_two_r_gain_names_a_partial_and_does_not_name_it_twice() -> None:
     named = _name(mark_price=Decimal("110"), highest_price=Decimal("110"))
     assert named is not None
     assert named.rule == "partial_take_profit"
+    assert set(named.to_document()) == {"rule", "reason", "triggers"}
     assert (
         _name(
             mark_price=Decimal("110"),
@@ -71,8 +70,11 @@ def test_a_two_r_gain_names_a_partial_and_does_not_name_it_twice() -> None:
 
 
 def test_the_chandelier_names_an_exit_only_after_it_activates() -> None:
-    quiet = _name(highest_price=Decimal("104"), mark_price=Decimal("99"))
+    quiet = _name(highest_price=Decimal("104"), mark_price=Decimal("98"))
     assert quiet is None
+    activated = _name(highest_price=Decimal("105"), mark_price=Decimal("99"))
+    assert activated is not None
+    assert activated.rule == "chandelier"
     trailed = _name(highest_price=Decimal("110"), mark_price=Decimal("104"))
     assert trailed is not None
     assert trailed.rule == "chandelier"
@@ -110,6 +112,7 @@ def test_a_forced_trigger_is_named_in_policy_order() -> None:
     assert named.rule == "forced"
     assert named.reason == "delisting_announced"
     assert named.triggers == ("delisting_announced", "rs_rank_percentile_below_0.40")
+    assert set(named.to_document()) == {"rule", "reason", "triggers"}
     with pytest.raises(ExitError, match="unknown"):
         _name(observed_triggers=frozenset({"not_a_trigger"}))
 
@@ -150,12 +153,15 @@ def test_bad_inputs_and_a_position_that_is_not_open_are_refused() -> None:
         _name(state=PositionState.CLOSED)
     with pytest.raises(ExitError, match="open"):
         _name(state=PositionState.PROPOSED)
+    with pytest.raises(ExitError, match="open"):
+        _name(state="OPEN")  # type: ignore[arg-type]
     with pytest.raises(ExitError, match="days"):
         _name(days_held=-1)
     with pytest.raises(ExitError, match="watermark"):
         _name(highest_price=Decimal("99"), mark_price=Decimal("100"))
-    with pytest.raises(ExitError, match="watermark"):
-        _name(mark_price=Decimal("90"), highest_price=Decimal("95"))
+    grind = _name(mark_price=Decimal("90"), highest_price=Decimal("95"))
+    assert grind is not None
+    assert grind.rule == "initial_stop"
     with pytest.raises(ExitError, match="watermark"):
         _name(mark_price=Decimal("101"), highest_price=Decimal("100"))
     with pytest.raises(ExitError, match="days"):
