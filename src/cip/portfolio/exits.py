@@ -53,7 +53,7 @@ def name_exit(
     exits: ExitHypotheses,
 ) -> NamedExit | None:
     """Name at most one exit. A missing exit is a hold, not a fill."""
-    if state not in _OPEN:
+    if type(state) is not PositionState or state not in _OPEN:
         raise ExitError("an exit is named only for an open position")
     if type(days_held) is not int or days_held < 0:
         raise ExitError("days held cannot be negative")
@@ -64,7 +64,7 @@ def name_exit(
     highest = _positive(highest_price, "highest price")
     measured = _positive(atr, "atr")
     relative = _decimal(return_vs_btc, "return versus btc")
-    if highest < entry or highest < mark:
+    if highest < mark:
         raise ExitError("the watermark is below the mark")
     triggers = _triggers(observed_triggers, exits)
     if triggers:
