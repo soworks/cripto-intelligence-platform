@@ -1,7 +1,7 @@
 # M4 — Position lifecycle and shadow portfolio
 
 **Date:** 2026-10-05
-**Status:** Slices 1–3 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57), [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59)). Slice 4 is sizing. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
+**Status:** Slices 1–4 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57), [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59), [#61](https://github.com/soworks/crypto-intelligence-platform/issues/61)). Slice 5 is limits and circuit breakers. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) is the parent. Implementation issues do not complete it.
 
@@ -12,8 +12,8 @@ Each slice is one implementation issue. Later slices call the portfolio book and
 1. **Portfolio book.** Point-in-time sleeves and manual off-exchange holdings. [#54](https://github.com/soworks/crypto-intelligence-platform/issues/54). Merged.
 2. **Position state machine.** `PROPOSED` through `CLOSED`. Every transition is a ledger event. No order id. [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57). Merged.
 3. **Exit rules.** ATR stop, partial take-profit, chandelier, time stop, max holding, and the forced-exit triggers already in policy. A rule names an exit. It does not invent a fill. [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59). Merged.
-4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order. This slice.
-5. **Limits and circuit breakers.** Open-position caps, sector cap, beta-weighted exposure, drawdown halts, loss streak, re-entry cooldown, monthly loss halt.
+4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order. [#61](https://github.com/soworks/crypto-intelligence-platform/issues/61). Merged.
+5. **Limits and circuit breakers.** Open-position caps, sector cap, beta-weighted exposure, drawdown halts, loss streak, re-entry cooldown, monthly loss halt. This slice.
 6. **Symbol filter.** Live `exchangeInfo` filters and an exit simulation after fees. A failed filter skips the name.
 7. **Shadow fills.** Next-bar fills, fees, spread, slippage, partial fills. Sells are not blocked by a buy budget.
 8. **Core sleeve.** Weekly BTC/ETH mix from the existing DCA engine, on the core budget only. The reserve is USDC until a later rule deploys it.
@@ -66,3 +66,13 @@ The minimum is `max(min_position_usd_floor, min_notional_multiple * symbol_min_n
 ## Out of slice 4
 
 Limits, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights.
+
+## Slice 5
+
+`admit_entry` reads the published limits and circuit breakers. The caller supplies the open discovery lines, the proposed name, sector, beta, and size, the sleeve drawdown from its high-water mark, the loss streak and the days since the last loss, the month's realized loss as a fraction of the caller's portfolio, and the days since this symbol last closed. A missing fact is refused. It is not invented as zero.
+
+A new entry is allowed only when every check is clear. The reasons, in order, are `review_and_flatten`, `halt_new_entries`, `loss_streak`, `monthly_loss`, `open_position_cap`, `sector_cap`, `beta_exposure`, `averaging_down`, `reentry_cooldown`, and `no_size`. Drawdown at the halt blocks new entries. Drawdown at the flatten level also names a review. That name is not a sell. Three consecutive losses block until `pause_days` have elapsed, and an unknown clock stays blocked. Five open discovery lines block another. Two lines in the candidate's sector block a third. Beta-weighted dollars above the exposure cap block; an equal weight is allowed. A symbol that is already open is averaging down, which the policy forbids. A symbol that closed fewer than the cooldown ago is blocked. An absent size is blocked. The document is `allowed`, `flatten`, and `reasons`. It has no order id.
+
+## Out of slice 5
+
+The symbol filter, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights. Applying a halt as a position transition is a later caller. Daily and monthly trade-dollar counters stay a separate roadmap item.
