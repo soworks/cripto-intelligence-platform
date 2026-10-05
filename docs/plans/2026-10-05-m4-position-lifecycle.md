@@ -117,7 +117,7 @@ Live executor orders, position transitions, inventing the owner's inventory, the
 
 Signal quality keeps each stored outcome. Excess is the absolute return minus the BTC return over the same horizon. An 8% loss while BTC fell 18% (excess +10%) stays a different row from an 8% loss while BTC rose 10% (excess -18%). A coefficient outside -1 to 1 is refused, so a score cannot be filed as a coefficient. The same decision and horizon cannot be listed twice.
 
-Trade quality with an empty list says `no_trades`. It does not invent round trips. A listed trip has its realized R, MAE, MFE, fees, and slippage. Expectancy, payoff, and profit factor stay out of this slice until a formula is published. Portfolio comparisons are named one by one. A figure the caller does not have is null. Null is not zero.
+Trade quality with an empty list says `no_trades`. It does not invent round trips. A listed trip has its realized R, MAE, MFE, fees, and slippage. Expectancy, payoff, and profit factor stay out of this slice until a formula is published. Portfolio comparisons are named one by one. A figure the caller does not have is null. Null is not zero. A signed zero is refused, so the document does not print `-0`.
 
 The document keys are the four sections. There is no grade and no order id.
 
