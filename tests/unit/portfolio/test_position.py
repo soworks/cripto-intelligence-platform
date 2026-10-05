@@ -1,4 +1,5 @@
 import json
+import warnings
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -133,6 +134,9 @@ def test_the_named_path_reaches_closed_and_a_partial_exit_is_optional() -> None:
         advance(_propose(), to=PositionState.OPEN, reason="jump", updated_at=WHEN)
     with pytest.raises(PositionError, match="cannot move"):
         advance(closed, to=PositionState.OPEN, reason="again", updated_at=WHEN)
+    partial_only = advance(opened, to=PositionState.PARTIAL_EXIT, reason="partial", updated_at=WHEN)
+    with pytest.raises(PositionError, match="cannot move"):
+        advance(partial_only, to=PositionState.CLOSED, reason="skip", updated_at=WHEN)
 
 
 def test_a_proposal_that_is_not_taken_can_close_without_opening() -> None:
@@ -234,6 +238,48 @@ def test_each_move_is_one_ledger_event_and_a_replay_does_not_rewrite_it(store: A
     assert positions.read(proposed.position_id) == approved
 
 
+def test_an_unvalidated_copy_does_not_change_the_stored_position(store: Any) -> None:
+    positions, state, ledger = store
+    proposed = _propose()
+    forged = proposed.model_copy(
+        update={"reason": {"order_id": "1", "quantity": "5", "notional": "10"}}
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with pytest.raises(PositionError, match="invalid"):
+            positions.commit(None, forged)
+    mismatched = proposed.model_copy(update={"decision_id": "ef" * 32})
+    with pytest.raises(PositionError, match="invalid"):
+        positions.commit(None, mismatched)
+    assert state.scan(Select="COUNT")["Count"] == 0
+    assert ledger.scan(Select="COUNT")["Count"] == 0
+    positions.commit(None, proposed)
+    copied = proposed.model_copy(update={"symbol": "ETHUSDT"})
+    moved = advance(
+        copied,
+        to=PositionState.APPROVED,
+        reason="approved",
+        updated_at=WHEN + timedelta(minutes=1),
+    )
+    recorded = ledger.scan(Select="COUNT")["Count"]
+    with pytest.raises(PositionError, match="no longer"):
+        positions.commit(copied, moved)
+    assert positions.read(proposed.position_id) == proposed
+    assert ledger.scan(Select="COUNT")["Count"] == recorded
+    other = _propose(decision_id="ef" * 32)
+    state.put_item(
+        Item={
+            "PK": f"POSITION#{other.position_id}",
+            "SK": "STATE",
+            "state": other.state.value,
+            "document": json.dumps(other.to_document(), sort_keys=True),
+        }
+    )
+    with pytest.raises(PositionError, match="already exists"):
+        positions.commit(None, other)
+    assert LedgerRepository(ledger).list_by_correlation(other.position_id) == []
+
+
 def test_a_conflicting_state_is_refused_and_a_broken_row_is_unusable(store: Any) -> None:
     positions, state, _ledger = store
     proposed = _propose()
@@ -249,6 +295,7 @@ def test_a_conflicting_state_is_refused_and_a_broken_row_is_unusable(store: Any)
     )
     with pytest.raises(PositionError, match="no longer"):
         positions.commit(proposed, approved)
+    assert _ledger.scan(Select="COUNT")["Count"] == 2
     with pytest.raises(PositionError, match="missing"):
         positions.read("c" * 64)
     state.put_item(

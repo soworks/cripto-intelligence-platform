@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from botocore.exceptions import ClientError
 
 from cip.domain.errors import DuplicateEventError, PositionError
-from cip.portfolio.position import Position, transition_event
+from cip.portfolio.position import Position, checked, document_text, transition_event
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.service_resource import Table
@@ -24,6 +24,8 @@ class PositionStore:
     def commit(self, before: Position | None, after: Position) -> None:
         """Write the state row and its ledger event, or write neither."""
         event = transition_event(before, after)
+        after = checked(after)
+        before = None if before is None else checked(before)
         ledger_item = event.to_item()
         guard = {
             "PK": f"IDEMP#{event.event_id}",
@@ -36,9 +38,12 @@ class PositionStore:
         if before is None:
             state_put["ConditionExpression"] = _NEW_ITEM
         else:
-            state_put["ConditionExpression"] = "#state = :from_state"
-            state_put["ExpressionAttributeNames"] = {"#state": "state"}
-            state_put["ExpressionAttributeValues"] = {":from_state": before.state.value}
+            state_put["ConditionExpression"] = "#state = :from_state AND #document = :before"
+            state_put["ExpressionAttributeNames"] = {"#state": "state", "#document": "document"}
+            state_put["ExpressionAttributeValues"] = {
+                ":from_state": before.state.value,
+                ":before": document_text(before),
+            }
         writes: Any = [
             {
                 "Put": {
@@ -63,7 +68,12 @@ class PositionStore:
             if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
                 raise DuplicateEventError(event.event_id) from error
             if len(reasons) > 2 and reasons[2].get("Code") == "ConditionalCheckFailed":
-                raise PositionError("position is no longer in the expected state") from error
+                message = (
+                    "position already exists"
+                    if before is None
+                    else "position is no longer in the expected state"
+                )
+                raise PositionError(message) from error
             raise
 
     def read(self, position_id: str) -> Position:
@@ -88,5 +98,5 @@ def _state_item(position: Position) -> dict[str, str]:
         "PK": f"POSITION#{position.position_id}",
         "SK": "STATE",
         "state": position.state.value,
-        "document": json.dumps(position.to_document(), sort_keys=True),
+        "document": document_text(position),
     }

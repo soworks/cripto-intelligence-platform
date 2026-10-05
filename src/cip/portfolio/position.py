@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -13,6 +14,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -194,14 +196,23 @@ def propose(
     )
 
 
+def checked(position: Position) -> Position:
+    """Rebuild the record so a copied object cannot skip validation."""
+    try:
+        return Position.model_validate(position.model_dump())
+    except ValidationError as error:
+        raise PositionError("position is invalid") from error
+
+
 def advance(
     position: Position, *, to: PositionState, reason: str, updated_at: datetime
 ) -> Position:
     """Move one step. The caller names the next state. This does not fill."""
+    current = checked(position)
     moved = Position.model_validate(
-        {**position.model_dump(), "state": to, "reason": reason, "updated_at": updated_at}
+        {**current.model_dump(), "state": to, "reason": reason, "updated_at": updated_at}
     )
-    require_transition(position, moved)
+    require_transition(current, moved)
     return moved
 
 
@@ -223,22 +234,28 @@ def require_transition(before: Position | None, after: Position) -> None:
 
 def transition_event(before: Position | None, after: Position) -> LedgerEvent:
     """One ledger event for this move. The payload has no order id."""
-    require_transition(before, after)
+    current = None if before is None else checked(before)
+    moved = checked(after)
+    require_transition(current, moved)
     return LedgerEvent(
         event_type=EventType.POSITION_TRANSITIONED,
-        correlation_id=after.position_id,
-        policy_version=after.policy_version,
-        asset=after.symbol,
-        created_at=after.updated_at,
-        idempotency_key=f"{after.position_id}:{after.state.value}",
+        correlation_id=moved.position_id,
+        policy_version=moved.policy_version,
+        asset=moved.symbol,
+        created_at=moved.updated_at,
+        idempotency_key=f"{moved.position_id}:{moved.state.value}",
         payload={
-            "position_id": after.position_id,
-            "decision_id": after.decision_id,
-            "from_state": None if before is None else before.state.value,
-            "to_state": after.state.value,
-            "reason": after.reason,
+            "position_id": moved.position_id,
+            "decision_id": moved.decision_id,
+            "from_state": None if current is None else current.state.value,
+            "to_state": moved.state.value,
+            "reason": moved.reason,
         },
     )
+
+
+def document_text(position: Position) -> str:
+    return json.dumps(checked(position).to_document(), sort_keys=True)
 
 
 def _canonical_utc(value: object) -> datetime:
