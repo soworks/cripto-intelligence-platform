@@ -1,7 +1,7 @@
 # M4 — Position lifecycle and shadow portfolio
 
 **Date:** 2026-10-05
-**Status:** Kicked off. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. Slice 1 is the portfolio book. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
+**Status:** Slice 1 is merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54)). Slice 2 is the position state machine. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) is the parent. Implementation issues do not complete it.
 
@@ -9,8 +9,8 @@ The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. Th
 
 Each slice is one implementation issue. Later slices call the portfolio book and the M3 decision record. They do not grow a second copy of eligibility or scoring, and they do not place an order.
 
-1. **Portfolio book.** Point-in-time sleeves and manual off-exchange holdings. [#54](https://github.com/soworks/crypto-intelligence-platform/issues/54). This slice.
-2. **Position state machine.** `PROPOSED` through `CLOSED`. Every transition is a ledger event. No order id.
+1. **Portfolio book.** Point-in-time sleeves and manual off-exchange holdings. [#54](https://github.com/soworks/crypto-intelligence-platform/issues/54). Merged.
+2. **Position state machine.** `PROPOSED` through `CLOSED`. Every transition is a ledger event. No order id. This slice.
 3. **Exit rules.** ATR stop, partial take-profit, chandelier, time stop, max holding, and the forced-exit triggers already in policy. A rule names an exit. It does not invent a fill.
 4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order.
 5. **Limits and circuit breakers.** Open-position caps, sector cap, beta-weighted exposure, drawdown halts, loss streak, re-entry cooldown, monthly loss halt.
@@ -29,6 +29,18 @@ Holdings stay approximate until the owner supplies the inventory. Do not invent 
 
 The file is `portfolio/date={session}/book.json`. The same bytes are a no-op. A different payload is refused. The document has no order id.
 
-## Out of this slice
+## Out of slice 1
 
 Sizing, stops, the state machine, shadow fills, the scorecard, live execution, and Score v2 weights.
+
+## Slice 2
+
+A position follows one decision. `position_id` is the SHA-256 of that decision id. It is not an order id. The record has no quantity and no notional.
+
+The states are `PROPOSED`, `APPROVED`, `ENTRY_PENDING`, `OPEN`, `PARTIAL_EXIT`, `EXIT_PENDING`, and `CLOSED`. A proposal that is not taken can close without opening. An open position reaches `CLOSED` only through `EXIT_PENDING`. `PARTIAL_EXIT` is optional. `CLOSED` has no next state. A move cannot change the decision, the symbol, or the cohort.
+
+The state item is `PK=POSITION#<id>`, `SK=STATE`. Each move is one `POSITION_TRANSITIONED` ledger event in the same transaction. Replaying that move is a duplicate event. A conflicting state is refused. The payload has `from_state`, `to_state`, and `reason`. It has no order id.
+
+## Out of slice 2
+
+Exit rules, sizing, limits, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights.

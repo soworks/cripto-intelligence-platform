@@ -21,6 +21,7 @@ class EventType(StrEnum):
     SCAN_COMPLETED = "SCAN_COMPLETED"
     DECISION_RECORDED = "DECISION_RECORDED"
     PIPELINE_FAILED = "PIPELINE_FAILED"
+    POSITION_TRANSITIONED = "POSITION_TRANSITIONED"
 
 
 def _payload_json(payload: Mapping[str, Any]) -> str:
