@@ -203,7 +203,22 @@ def test_a_name_that_cannot_trade_or_stop_is_skipped() -> None:
     assert _screen(info=_info(filters=capped)).reasons == ("algo_orders",)
 
 
-def test_the_older_minimum_notional_filter_still_binds() -> None:
+def test_the_stricter_of_two_notional_filters_binds() -> None:
+    filters = _filters()
+    filters.append({"filterType": "MIN_NOTIONAL", "minNotional": "500"})
+    assert "min_notional" in _screen(info=_info(filters=filters)).reasons
+    legacy = [item for item in _filters() if item["filterType"] != "NOTIONAL"]
+    legacy.append({"filterType": "MIN_NOTIONAL", "minNotional": "-1"})
+    with pytest.raises(FilterError, match="filter"):
+        _screen(info=_info(filters=legacy))
+    zero_cap = _filters()
+    zero_cap[3] = {"filterType": "NOTIONAL", "minNotional": "5", "maxNotional": "0"}
+    with pytest.raises(FilterError, match="filter"):
+        _screen(info=_info(filters=zero_cap))
+    wide = _filters()
+    wide[4] = {**wide[4], "bidMultiplierDown": "0"}  # type: ignore[arg-type]
+    with pytest.raises(FilterError, match="filter"):
+        _screen(info=_info(filters=wide))
     filters = [item for item in _filters() if item["filterType"] != "NOTIONAL"]
     filters.append({"filterType": "MIN_NOTIONAL", "minNotional": "5"})
     assert _screen(info=_info(filters=filters), size_usd=Decimal("4")).reasons == (
