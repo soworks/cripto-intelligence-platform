@@ -1,7 +1,7 @@
 # M4 — Position lifecycle and shadow portfolio
 
 **Date:** 2026-10-05
-**Status:** Slice 1 is merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54)). Slice 2 is the position state machine. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
+**Status:** Slices 1 and 2 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57)). Slice 3 is exit rules. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) is the parent. Implementation issues do not complete it.
 
@@ -10,8 +10,8 @@ The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. Th
 Each slice is one implementation issue. Later slices call the portfolio book and the M3 decision record. They do not grow a second copy of eligibility or scoring, and they do not place an order.
 
 1. **Portfolio book.** Point-in-time sleeves and manual off-exchange holdings. [#54](https://github.com/soworks/crypto-intelligence-platform/issues/54). Merged.
-2. **Position state machine.** `PROPOSED` through `CLOSED`. Every transition is a ledger event. No order id. This slice.
-3. **Exit rules.** ATR stop, partial take-profit, chandelier, time stop, max holding, and the forced-exit triggers already in policy. A rule names an exit. It does not invent a fill.
+2. **Position state machine.** `PROPOSED` through `CLOSED`. Every transition is a ledger event. No order id. [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57). Merged.
+3. **Exit rules.** ATR stop, partial take-profit, chandelier, time stop, max holding, and the forced-exit triggers already in policy. A rule names an exit. It does not invent a fill. This slice.
 4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order.
 5. **Limits and circuit breakers.** Open-position caps, sector cap, beta-weighted exposure, drawdown halts, loss streak, re-entry cooldown, monthly loss halt.
 6. **Symbol filter.** Live `exchangeInfo` filters and an exit simulation after fees. A failed filter skips the name.
@@ -44,3 +44,15 @@ The state item is `PK=POSITION#<id>`, `SK=STATE`. Each move is one `POSITION_TRA
 ## Out of slice 2
 
 Exit rules, sizing, limits, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights.
+
+## Slice 3
+
+`name_exit` reads the policy exit block and caller-supplied facts: entry, mark, highest price, ATR, days held, return versus BTC, and which forced triggers were observed. It returns one rule name or no exit. No exit is a hold. The result has no price, quantity, or order id, and it does not change position state.
+
+The initial stop distance is the tighter of `initial_stop_atr_mult` times ATR and `initial_stop_max_pct` of entry. The chandelier turns on after the high reaches `trailing_activate_after_r` and then sits `trailing_atr_mult` ATRs under that high. If both stops are touched, the higher stop is the one named. A partial is named only for an `OPEN` position that has not already taken one, once the mark is `partial_take_profit_r` above the stop distance. The time stop needs both `time_stop_days` and a BTC-relative return at or below the ceiling. Day `max_holding_days` (56) names the max hold.
+
+Order when several are true: forced trigger, binding stop, max hold, time stop, partial. Forced triggers are reported in policy order. An exit is named only for `OPEN` or `PARTIAL_EXIT`.
+
+## Out of slice 3
+
+Sizing, limits, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights. Applying the name as a position transition is a later caller.
