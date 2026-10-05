@@ -1,7 +1,7 @@
 # M4 — Position lifecycle and shadow portfolio
 
 **Date:** 2026-10-05
-**Status:** Slices 1 and 2 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57)). Slice 3 is exit rules. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
+**Status:** Slices 1–3 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57), [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59)). Slice 4 is sizing. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) is the parent. Implementation issues do not complete it.
 
@@ -11,8 +11,8 @@ Each slice is one implementation issue. Later slices call the portfolio book and
 
 1. **Portfolio book.** Point-in-time sleeves and manual off-exchange holdings. [#54](https://github.com/soworks/crypto-intelligence-platform/issues/54). Merged.
 2. **Position state machine.** `PROPOSED` through `CLOSED`. Every transition is a ledger event. No order id. [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57). Merged.
-3. **Exit rules.** ATR stop, partial take-profit, chandelier, time stop, max holding, and the forced-exit triggers already in policy. A rule names an exit. It does not invent a fill. This slice.
-4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order.
+3. **Exit rules.** ATR stop, partial take-profit, chandelier, time stop, max holding, and the forced-exit triggers already in policy. A rule names an exit. It does not invent a fill. [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59). Merged.
+4. **Sizing.** Risk-per-trade, stop distance, beta, regime multiplier, and the minimum position. Below the minimum, no size. A size is not an order. This slice.
 5. **Limits and circuit breakers.** Open-position caps, sector cap, beta-weighted exposure, drawdown halts, loss streak, re-entry cooldown, monthly loss halt.
 6. **Symbol filter.** Live `exchangeInfo` filters and an exit simulation after fees. A failed filter skips the name.
 7. **Shadow fills.** Next-bar fills, fees, spread, slippage, partial fills. Sells are not blocked by a buy budget.
@@ -56,3 +56,13 @@ Order when several are true: forced trigger, binding stop, max hold, time stop, 
 ## Out of slice 3
 
 Sizing, limits, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights. Applying the name as a position transition is a later caller.
+
+## Slice 4
+
+`size_position` uses the caller’s portfolio value. It does not read `starting_value_usd`. Risk is `risk_per_trade_pct_of_portfolio` times that value. The uncapped size is risk divided by the stop distance, which is a fraction. The result is the minimum of that amount, `max_trade_usd`, and `max_discovery_asset_pct` times the portfolio, then multiplied by the published regime’s `size_mult` and divided by `max(beta, 1)`. A beta below 1 does not increase the size.
+
+The minimum is `max(min_position_usd_floor, min_notional_multiple * symbol_min_notional)`. Below that minimum, `size_usd` is absent. `RISK_OFF` and a missing regime are also absent, not zero. The document is `size_usd`, `minimum_usd`, and `reason`. It has no quantity and no order id.
+
+## Out of slice 4
+
+Limits, shadow fills, the hourly monitor, the scorecard, live execution, and Score v2 weights.
