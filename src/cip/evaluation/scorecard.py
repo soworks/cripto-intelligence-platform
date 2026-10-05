@@ -62,6 +62,8 @@ def _exact_text(value: object) -> str:
 def _exact_decimal(value: object) -> Decimal:
     if type(value) is not Decimal or not value.is_finite():
         raise ValueError("results are Decimal")
+    if value.is_zero() and value.is_signed():
+        raise ValueError("a signed zero is not a result")
     return value
 
 

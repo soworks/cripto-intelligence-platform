@@ -227,3 +227,57 @@ def test_a_trade_or_a_signal_with_a_bad_shape_is_refused() -> None:
         **_counts(signals=(_signal(coefficient=Decimal("-1")),))  # type: ignore[arg-type]
     )
     assert floor.signal_quality[0].coefficient == Decimal("-1")
+
+
+def test_a_signed_zero_is_refused_and_a_real_zero_stays_zero() -> None:
+    card = report_scorecard(
+        **_counts(  # type: ignore[arg-type]
+            signals=(
+                _signal(
+                    absolute_return=Decimal("0"),
+                    btc_return=Decimal("0"),
+                    excess_return=Decimal("0"),
+                    universe_relative_return=Decimal("0"),
+                    coefficient=Decimal("0"),
+                ),
+            ),
+            trades=(
+                _trade(
+                    mae=Decimal("0"),
+                    mfe=Decimal("0"),
+                    fees_usd=Decimal("0"),
+                    slippage=Decimal("0"),
+                ),
+            ),
+            portfolio=_portfolio(sharpe=Decimal("0"), fee_drag_usd=Decimal("0")),
+        )
+    )
+    document = card.to_document()
+    assert document["signal_quality"][0]["absolute_return"] == "0"
+    assert document["trade_quality"]["trades"][0]["fees_usd"] == "0"
+    assert document["portfolio_quality"]["sharpe"] == "0"
+    signed = Decimal("-0")
+    with pytest.raises(ScorecardError, match="invalid"):
+        report_scorecard(**_counts(trades=(_trade(fees_usd=signed),)))  # type: ignore[arg-type]
+    with pytest.raises(ScorecardError, match="invalid"):
+        report_scorecard(**_counts(trades=(_trade(slippage=signed),)))  # type: ignore[arg-type]
+    with pytest.raises(ScorecardError, match="invalid"):
+        report_scorecard(**_counts(trades=(_trade(mfe=signed),)))  # type: ignore[arg-type]
+    with pytest.raises(ScorecardError, match="invalid"):
+        report_scorecard(
+            **_counts(  # type: ignore[arg-type]
+                signals=(
+                    _signal(
+                        absolute_return=signed,
+                        btc_return=Decimal("0"),
+                        excess_return=signed,
+                    ),
+                )
+            )
+        )
+    with pytest.raises(ScorecardError, match="invalid"):
+        report_scorecard(**_counts(portfolio=_portfolio(sharpe=signed)))  # type: ignore[arg-type]
+    with pytest.raises(ScorecardError, match="invalid"):
+        report_scorecard(
+            **_counts(signals=(_signal(coefficient=signed),))  # type: ignore[arg-type]
+        )
