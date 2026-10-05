@@ -72,3 +72,7 @@ class FillError(CipError):
 
 class CoreError(CipError):
     """A core week cannot be planned; callers must not invent an order."""
+
+
+class PilotError(CipError):
+    """A pilot purchase cannot be recorded; callers must not invent an order."""
