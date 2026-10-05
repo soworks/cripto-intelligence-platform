@@ -217,7 +217,8 @@ def _read(
     ):
         return status, quote, spot, frozenset(order_types), None
     price = found["PRICE_FILTER"]
-    notion = found["NOTIONAL"] if "NOTIONAL" in found else found["MIN_NOTIONAL"]
+    minimum, maximum = _notional(found)
+    band = found["PERCENT_PRICE_BY_SIDE"]
     return (
         status,
         quote,
@@ -229,12 +230,12 @@ def _read(
             tick=_number(price, "tickSize"),
             lot=_lot(found["LOT_SIZE"]),
             market=_lot(found["MARKET_LOT_SIZE"]),
-            min_notional=_number(notion, "minNotional"),
-            max_notional=_optional_number(notion, "maxNotional"),
-            bid_down=_number(found["PERCENT_PRICE_BY_SIDE"], "bidMultiplierDown"),
-            bid_up=_number(found["PERCENT_PRICE_BY_SIDE"], "bidMultiplierUp"),
-            ask_down=_number(found["PERCENT_PRICE_BY_SIDE"], "askMultiplierDown"),
-            ask_up=_number(found["PERCENT_PRICE_BY_SIDE"], "askMultiplierUp"),
+            min_notional=minimum,
+            max_notional=maximum,
+            bid_down=_band(band, "bidMultiplierDown"),
+            bid_up=_band(band, "bidMultiplierUp"),
+            ask_down=_band(band, "askMultiplierDown"),
+            ask_up=_band(band, "askMultiplierUp"),
             algo_max=_count(found["MAX_NUM_ALGO_ORDERS"].get("maxNumAlgoOrders")),
         ),
     )
@@ -268,12 +269,12 @@ def _lot(payload: dict[str, object]) -> _Lot:
 
 
 def _on_grid(price: Decimal, minimum: Decimal, maximum: Decimal, tick: Decimal) -> bool:
+    if tick < 0:
+        raise FilterError("filter is unreadable")
     if price < minimum or price > maximum:
         return False
     if tick == 0:
         return True
-    if tick < 0:
-        raise FilterError("filter is unreadable")
     return (price - minimum) % tick == 0
 
 
@@ -319,10 +320,31 @@ def _number(payload: dict[str, object], key: str) -> Decimal:
     return parsed
 
 
-def _optional_number(payload: dict[str, object], key: str) -> Decimal | None:
-    if key not in payload:
-        return None
-    return _number(payload, key)
+def _notional(found: dict[str, dict[str, object]]) -> tuple[Decimal, Decimal | None]:
+    floors: list[Decimal] = []
+    caps: list[Decimal] = []
+    for name in ("NOTIONAL", "MIN_NOTIONAL"):
+        payload = found.get(name)
+        if payload is None:
+            continue
+        floor = _number(payload, "minNotional")
+        if floor < 0:
+            raise FilterError("filter is unreadable")
+        floors.append(floor)
+        if "maxNotional" not in payload:
+            continue
+        cap = _number(payload, "maxNotional")
+        if cap <= 0:
+            raise FilterError("filter is unreadable")
+        caps.append(cap)
+    return max(floors), min(caps) if caps else None
+
+
+def _band(payload: dict[str, object], key: str) -> Decimal:
+    parsed = _number(payload, key)
+    if parsed <= 0:
+        raise FilterError("filter is unreadable")
+    return parsed
 
 
 def _count(value: object) -> int:
