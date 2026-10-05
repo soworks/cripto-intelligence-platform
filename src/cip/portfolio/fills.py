@@ -50,14 +50,19 @@ class ShadowFill(_Strict):
 
     @model_validator(mode="after")
     def _matches(self) -> Self:
+        if self.requested <= 0:
+            raise ValueError("the request is positive")
         traded = self.reason in ("filled", "partial")
-        present = (
+        all_set = (
             self.fill_price is not None
             and self.quantity is not None
             and self.fee_drag_usd is not None
         )
-        if traded is not present:
+        all_empty = self.fill_price is None and self.quantity is None and self.fee_drag_usd is None
+        if traded and not all_set:
             raise ValueError("a fill has a price, a quantity, and a fee")
+        if not traded and not all_empty:
+            raise ValueError("an unfilled shadow has no price and no quantity")
         if not traded:
             if self.budget_usd != 0:
                 raise ValueError("an unfilled shadow does not spend the buy budget")
@@ -73,6 +78,8 @@ class ShadowFill(_Strict):
             raise ValueError("a partial fill is smaller than the request")
         if self.side == "buy" and self.budget_usd != quantity * price:
             raise ValueError("a buy spends its filled notional")
+        if self.side == "buy" and drag >= self.budget_usd:
+            raise ValueError("the fee is part of the cash spent")
         if self.side == "sell" and self.budget_usd != 0:
             raise ValueError("a sell does not spend the buy budget")
         return self
