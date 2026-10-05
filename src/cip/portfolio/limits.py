@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, model_validator
 
 from cip.domain.errors import LimitError
 from cip.domain.policy import LoadedPolicy
@@ -26,6 +26,25 @@ Reason = Literal[
 ]
 
 
+def _exact_bool(value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError("allowed and flatten are booleans")
+    return value
+
+
+def _exact_decimal(value: object) -> Decimal:
+    if type(value) is not Decimal or not value.is_finite():
+        raise ValueError("beta and value are Decimal")
+    return value
+
+
+def _positive_decimal(value: object) -> Decimal:
+    parsed = _exact_decimal(value)
+    if parsed <= 0:
+        raise ValueError("value is positive")
+    return parsed
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
@@ -35,15 +54,15 @@ class DiscoveryLine(_Strict):
 
     symbol: str
     sector: str
-    beta: Decimal
-    value_usd: Decimal
+    beta: Annotated[Decimal, BeforeValidator(_exact_decimal)]
+    value_usd: Annotated[Decimal, BeforeValidator(_positive_decimal)]
 
 
 class LimitDecision(_Strict):
     """Allowed, or the reasons it is not. There is no order id."""
 
-    allowed: bool
-    flatten: bool
+    allowed: Annotated[bool, BeforeValidator(_exact_bool)]
+    flatten: Annotated[bool, BeforeValidator(_exact_bool)]
     reasons: tuple[Reason, ...]
 
     @model_validator(mode="after")
@@ -55,10 +74,14 @@ class LimitDecision(_Strict):
         return self
 
     def to_document(self) -> dict[str, Any]:
+        try:
+            checked = LimitDecision.model_validate(self.model_dump())
+        except ValidationError as error:
+            raise LimitError("limit decision is invalid") from error
         return {
-            "allowed": self.allowed,
-            "flatten": self.flatten,
-            "reasons": list(self.reasons),
+            "allowed": checked.allowed,
+            "flatten": checked.flatten,
+            "reasons": list(checked.reasons),
         }
 
 
@@ -137,12 +160,16 @@ def _book(positions: object) -> tuple[DiscoveryLine, ...]:
     for line in positions:
         if type(line) is not DiscoveryLine:
             raise LimitError("open positions are discovery lines")
-        _symbol(line.symbol)
-        _sector(line.sector)
-        if line.symbol in seen:
+        try:
+            checked = DiscoveryLine.model_validate(line.model_dump())
+        except ValidationError as error:
+            raise LimitError("open positions are discovery lines") from error
+        _symbol(checked.symbol)
+        _sector(checked.sector)
+        if checked.symbol in seen:
             raise LimitError("duplicate discovery symbols")
-        seen.add(line.symbol)
-        book.append(line)
+        seen.add(checked.symbol)
+        book.append(checked)
     return tuple(book)
 
 
