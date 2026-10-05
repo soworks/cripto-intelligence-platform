@@ -108,7 +108,7 @@ name one week's Bitcoin and Ethereum dollars from the monthly core budget.
 The reserve is not spent. That note is not a purchase. An October purchase
 the owner already made can be written down on the pilot record, up to 500
 dollars, from 19 October through 31 October. That note is not an order either.
-The scorecard can then set four results side by side: whether the decisions
+The scorecard can then place four results side by side: whether the decisions
 were intact, how later prices compared with Bitcoin, how any closed trades
 behaved, and how the book compared with the simple benchmarks. The same loss
 is not one verdict. A loss while Bitcoin fell harder is a different result
