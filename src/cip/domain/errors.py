@@ -60,3 +60,7 @@ class SizeError(CipError):
 
 class LimitError(CipError):
     """A limit cannot be judged; callers must not invent an order."""
+
+
+class FilterError(CipError):
+    """A symbol filter cannot be judged; callers must not invent an order."""
