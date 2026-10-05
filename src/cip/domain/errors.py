@@ -64,3 +64,7 @@ class LimitError(CipError):
 
 class FilterError(CipError):
     """A symbol filter cannot be judged; callers must not invent an order."""
+
+
+class FillError(CipError):
+    """A shadow fill cannot be priced; callers must not invent an order."""
