@@ -105,15 +105,16 @@ The research record is in place: stored history, one decision per coin for a
 closed session, the portfolio book, position states, and the notes for size,
 limits, exchange rules, exits, and shadow prices. The core sleeve can also
 name one week's Bitcoin and Ethereum dollars from the monthly core budget.
-The reserve is not spent. That note is not a purchase.
+The reserve is not spent. That note is not a purchase. An October purchase
+the owner already made can be written down on the pilot record, up to 500
+dollars, from 19 October through 31 October. That note is not an order either.
 
 An hourly job in the dev environment records that a cycle started and
 finished. It does not rank coins. Ranking belongs to the daily decision, and
 only from stored inputs.
 
-Still ahead: a place to record the owner's own October buys, a scorecard that
-judges the research on more than profit and loss, and a production shadow
-environment.
+Still ahead: a scorecard that judges the research on more than profit and
+loss, and a production shadow environment.
 The score weights stay unset until the evidence can support them.
 
 Diagrams of the flows and the engines are in the

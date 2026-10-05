@@ -154,11 +154,12 @@ flowchart TD
 - **Exits** name at most one rule for `OPEN` or `PARTIAL_EXIT`: a forced trigger, the binding stop, max hold, the time stop, or a partial take-profit. No name is a hold. The result has no price and no quantity.
 - **Shadow fills** price one buy or one sell at the next session open. A missing open, a zero quantity, or a buy that would exceed the daily or monthly buy budget produces no fill. A sell is priced anyway and does not spend the buy budget. Cost is the taker fee, half the caller spread, and the caller slippage. A smaller quantity is a partial fill.
 - **Core weeks** split the monthly core budget across the caller's week count, then split that week with the DCA allocator. The reserve stays at zero. The document is dollars, and publishing it recomputes the week from the policy.
+- **Pilot executions** record an owner purchase on `ALPHA_PILOT_2026_10` between 2026-10-19 and 2026-10-31. The cap is 500 USD. The note has no order id.
 
 Applying a fill or an exit name as a position transition is a later caller.
-The lifecycle plan's remaining slices are manual pilot execution records, the
-engine assurance scorecard, and prod shadow. The hourly position monitor is
-still a roadmap item. Band rebalancing and reserve deployment are still open.
+The lifecycle plan's remaining slices are the engine assurance scorecard and
+prod shadow. The hourly position monitor is still a roadmap item. Band
+rebalancing and reserve deployment are still open.
 
 ## Engines
 
@@ -204,7 +205,7 @@ flowchart TB
 | Market data | `cip.adapters` | Public Binance client, weight-aware limiter, and parsers for exchange info, tickers, klines, and depth |
 | History | `cip.history` | Survivorship-free daily klines, listing continuity, and the point-in-time universe |
 | Evaluation | `cip.evaluation` | Daily scan, features, gates, regime, score, decision store, outcomes, and the coefficient study |
-| Portfolio | `cip.portfolio` | Book, position state, exits, sizing, limits, symbol filter, shadow fills, and core weeks |
+| Portfolio | `cip.portfolio` | Book, position state, exits, sizing, limits, symbol filter, shadow fills, core weeks, and pilot executions |
 | Persistence | `cip.persistence` | Append-only ledger writes, and the position row plus its ledger event in one transaction |
 | Backtest | `cip.backtest` | BTC and BTC/ETH DCA replay, portfolio metrics, and a simulator that calls eligibility, score, and exit contracts |
 | Handlers | `cip.handlers` | Lambda entry points for the scan skeleton, the market probe, and the recorders |
