@@ -44,3 +44,7 @@ class EvaluationError(CipError):
 
 class PortfolioError(CipError):
     """A portfolio book cannot be stored; callers must not invent holdings."""
+
+
+class PositionError(CipError):
+    """A position cannot change state; callers must not invent an order."""
