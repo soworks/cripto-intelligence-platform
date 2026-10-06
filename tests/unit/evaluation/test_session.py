@@ -76,6 +76,8 @@ def _bar(symbol: str, day: date) -> DailyBar:
 
 def _candidate(
     *,
+    symbol: str = SYMBOL,
+    base: str = "SOL",
     as_of: datetime = CLOSE,
     gecko_cap: Decimal | None = Decimal("1"),
     gecko_stamp: datetime | None = CLOSE,
@@ -99,7 +101,7 @@ def _candidate(
         "unlock_schedule_known": None,
     }
     return ScanCandidate(
-        facts=CandidateFacts(symbol=SYMBOL, base_asset="SOL", quote_asset="USDT", **blanks),  # type: ignore[arg-type]
+        facts=CandidateFacts(symbol=symbol, base_asset=base, quote_asset="USDT", **blanks),  # type: ignore[arg-type]
         market=MarketSnapshot(
             as_of=as_of,
             median_quote_volume_30d_usd=None,
@@ -358,6 +360,37 @@ def test_present_weights_leave_the_weight_note_off() -> None:
     assert result.decision_notes == ()
 
 
+def test_a_candidate_for_another_symbol_does_not_look_ready() -> None:
+    packet = _candidate()
+    snapshot = UniverseSnapshot(
+        session=SESSION,
+        symbols=("ETHUSDT",),
+        observed_at=CLOSE,
+        provenance="stored-exchange-info",
+    )
+    result = _assess(
+        snapshot=snapshot,
+        bars={"BTCUSDT": (_bar("BTCUSDT", SESSION),), "ETHUSDT": (_bar("ETHUSDT", SESSION),)},
+        bar_months_present={"BTCUSDT": True, "ETHUSDT": True},
+        candidates={"ETHUSDT": packet},
+        candidate_files_present={"ETHUSDT": True},
+    )
+    assert result.blocks == ("candidate_symbol_mismatch:ETHUSDT",)
+
+
+def test_a_bar_stored_under_another_symbol_does_not_look_ready() -> None:
+    bars = {"BTCUSDT": (_bar("ETHUSDT", SESSION),), SYMBOL: (_bar(SYMBOL, SESSION),)}
+    assert _assess(bars=bars).blocks == ("bar_symbol_mismatch:BTCUSDT",)
+
+
+def test_a_duplicate_bar_date_does_not_look_ready() -> None:
+    bars = {
+        "BTCUSDT": (_bar("BTCUSDT", SESSION), _bar("BTCUSDT", SESSION)),
+        SYMBOL: (_bar(SYMBOL, SESSION),),
+    }
+    assert _assess(bars=bars).blocks == ("duplicate_bar_date:BTCUSDT",)
+
+
 def test_an_empty_reason_is_refused() -> None:
     with pytest.raises(EvaluationError, match="non-empty"):
         SessionReadiness(ready=False, blocks=("",), decision_notes=(), score_weights="absent")
@@ -372,7 +405,7 @@ def test_btc_in_the_snapshot_is_not_checked_twice() -> None:
     )
     result = _assess(
         snapshot=snapshot,
-        candidates={"BTCUSDT": _candidate(), SYMBOL: _candidate()},
+        candidates={"BTCUSDT": _candidate(symbol="BTCUSDT", base="BTC"), SYMBOL: _candidate()},
         candidate_files_present={"BTCUSDT": True, SYMBOL: True},
     )
     assert result.ready is True
