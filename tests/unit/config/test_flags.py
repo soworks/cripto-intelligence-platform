@@ -23,9 +23,11 @@ def _put(ssm: Any, mode: str = "SHADOW", trading: str = "false", kill: str = "fa
 
 def test_reads_valid_flags(ssm: Any) -> None:
     _put(ssm)
-    assert read_execution_flags(ssm, PREFIX) == ExecutionFlags(
+    flags = read_execution_flags(ssm, PREFIX)
+    assert flags == ExecutionFlags(
         mode=ExecutionMode.SHADOW, trading_enabled=False, kill_switch_active=False
     )
+    assert flags.confirmed is True
 
 
 def test_reads_true_values_case_insensitively(ssm: Any) -> None:
@@ -103,6 +105,7 @@ def test_botocore_error_fails_closed(caplog: pytest.LogCaptureFixture) -> None:
 
 def test_fail_closed_never_allows_live_orders() -> None:
     assert FAIL_CLOSED.may_place_live_orders is False
+    assert FAIL_CLOSED.confirmed is False
 
 
 def test_live_orders_allowed_only_with_all_conditions() -> None:

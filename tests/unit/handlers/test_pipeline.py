@@ -199,3 +199,15 @@ def test_a_prod_shadow_completion_records_the_clock_once(
     assert clock.event_type is EventType.PROD_SHADOW_STARTED
     assert clock.payload["prod_shadow_started_at"] == clock.timestamp
     assert clock.idempotency_key == "prod-shadow-clock"
+
+
+def test_an_unread_prod_flag_set_does_not_start_the_clock(
+    lambda_env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CIP_ENV", "prod")
+    context = FakeLambdaContext()
+    started = pipeline.start_scan({"correlation_id": "corr-unread"}, context)
+
+    pipeline.complete_scan(started, context)
+
+    assert LedgerRepository(lambda_env).list_by_correlation("prod-shadow") == []

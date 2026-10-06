@@ -267,6 +267,11 @@ def test_one_shadow_trade_traces_from_decision_to_assurance(
     assert exit_fill.budget_usd == 0
     assert entry.fill_price is not None
     assert exit_fill.fill_price is not None
+    assert entry.fee_drag_usd is not None
+    assert exit_fill.fee_drag_usd is not None
+    assert entry.fee_drag_usd > 0
+    assert exit_fill.fee_drag_usd > 0
+    costs = entry.fee_drag_usd + exit_fill.fee_drag_usd
     risk = entry.fill_price * Decimal("0.05")
     card = report_scorecard(
         decisions=1,
@@ -293,7 +298,7 @@ def test_one_shadow_trade_traces_from_decision_to_assurance(
                 "realized_r": (exit_fill.fill_price - entry.fill_price) / risk,
                 "mae": outcome.mae,
                 "mfe": outcome.mfe,
-                "fees_usd": entry.fee_drag_usd,
+                "fees_usd": costs,
                 "slippage": Decimal("0.001"),
             }
         ],
@@ -318,6 +323,16 @@ def test_one_shadow_trade_traces_from_decision_to_assurance(
     assert states == ["PROPOSED", "APPROVED", "ENTRY_PENDING", "OPEN", "EXIT_PENDING", "CLOSED"]
     assert all(event.payload["decision_id"] == identity for event in events)
     assert all(event.policy_version == POLICY.version for event in events)
+    exiting_event = next(event for event in events if event.payload["to_state"] == "EXIT_PENDING")
+    assert exiting_event.payload["reason"] == "max_holding"
+    stored_week = json.loads(
+        (tmp_path / "assurance" / "week=2026-10-11" / "scorecard.json").read_text()
+    )
+    stored_trade = stored_week["scorecard"]["trade_quality"]["trades"][0]
+    assert stored_trade["decision_id"] == identity
+    assert stored_trade["fees_usd"] == format(costs, "f")
+    assert Decimal(entry.to_document()["fee_drag_usd"]) == entry.fee_drag_usd
+    assert Decimal(exit_fill.to_document()["fee_drag_usd"]) == exit_fill.fee_drag_usd
     published = card.to_document()
     blob = json.dumps(
         {

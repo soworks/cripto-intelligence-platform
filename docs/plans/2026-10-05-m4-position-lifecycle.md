@@ -141,7 +141,7 @@ An executor, live orders, Score v2 weights, the hourly position monitor, and app
 
 [#79](https://github.com/soworks/crypto-intelligence-platform/issues/79) is not a twelfth slice. Slices 1–11 stay closed.
 
-`prod_shadow_started_at` is the timestamp of the first successful production SHADOW cycle with trading disabled. The complete-scan function writes it only when `CIP_ENV` is `prod`. A retry returns the original timestamp. Dev does not write it. The operational closure does not invent a timestamp, and it does not dispatch the protected production apply.
+`prod_shadow_started_at` is the timestamp of the first successful production SHADOW cycle with trading disabled. The complete-scan function writes it only when `CIP_ENV` is `prod` and the execution flags were actually read. An unread flag set is fail-closed SHADOW, and it does not start the clock. A later cycle reads the first event, which needs `dynamodb:GetItem` on the ledger. A retry returns the original timestamp. Dev does not write it. The operational closure does not invent a timestamp, and it does not dispatch the protected production apply.
 
 One synthetic lifecycle walks a decision through a position, a size, admission, the symbol filter, a shadow entry, OPEN, the max-holding exit, a shadow exit, CLOSED, a forward outcome, and the four-dimension scorecard. Each persisted write is replayed. The same bytes stay. A different payload is refused. The trace keeps the decision, the policy version, the transitions, both fills, the exit reason, the costs, and the outcome. No order id appears.
 
