@@ -23,6 +23,45 @@ module "weekly_assurance_role" {
 
   create_inline_policy = true
   inline_policy_permissions = {
+    ReadEvidence = {
+      actions = ["s3:GetObject"]
+      resources = [
+        "${module.data_bucket.s3_bucket_arn}/decisions/*",
+        "${module.data_bucket.s3_bucket_arn}/decision-outcomes/*",
+        "${module.data_bucket.s3_bucket_arn}/shadow-trades/*",
+        "${module.data_bucket.s3_bucket_arn}/assurance/portfolio.json",
+        # The same week is read before a second write. GetObject cannot delete it.
+        "${module.data_bucket.s3_bucket_arn}/assurance/week=*",
+      ]
+    }
+    ListEvidence = {
+      actions   = ["s3:ListBucket"]
+      resources = [module.data_bucket.s3_bucket_arn]
+      condition = [{
+        test     = "StringLike"
+        variable = "s3:prefix"
+        values = [
+          "decisions/",
+          "decisions/*",
+          "decision-outcomes/",
+          "decision-outcomes/*",
+          "shadow-trades/",
+          "shadow-trades/*",
+        ]
+      }]
+    }
+    WriteWeek = {
+      actions   = ["s3:PutObject"]
+      resources = ["${module.data_bucket.s3_bucket_arn}/assurance/week=*"]
+    }
+    DenyEvidenceDestruction = {
+      effect = "Deny"
+      actions = [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+      ]
+      resources = ["${module.data_bucket.s3_bucket_arn}/*"]
+    }
     Logs = {
       actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
       resources = local.weekly_assurance_log_group_arns
@@ -45,7 +84,7 @@ module "weekly_assurance_lambda" {
   runtime       = "python3.13"
   architectures = ["arm64"]
   memory_size   = 256
-  timeout       = 30
+  timeout       = 60
 
   create_package         = false
   local_existing_package = var.artifact_path
@@ -54,6 +93,7 @@ module "weekly_assurance_lambda" {
   lambda_role = module.weekly_assurance_role.arn
 
   environment_variables = {
+    DATA_BUCKET             = module.data_bucket.s3_bucket_id
     POWERTOOLS_SERVICE_NAME = "cip-assurance"
     POWERTOOLS_LOG_LEVEL    = "INFO"
   }
@@ -113,7 +153,7 @@ module "weekly_assurance_schedule" {
   schedules = {
     (local.weekly_assurance_name) = {
       group_name          = "default"
-      description         = "Weekly four-dimension scorecard. No stored inputs means no report."
+      description         = "Monday scorecard from stored records. A failed read writes nothing."
       schedule_expression = "cron(0 0 ? * MON *)"
       state               = local.schedule_enabled
       arn                 = module.weekly_assurance_lambda.lambda_function_arn
