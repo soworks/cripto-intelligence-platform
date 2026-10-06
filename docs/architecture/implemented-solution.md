@@ -164,21 +164,20 @@ the hourly shadow clock and stay in SHADOW, with trading disabled. A count of
 attempt. The production apply is a protected workflow. It is not part of the
 dev deploy.
 
-The first successful production SHADOW cycle records `prod_shadow_started_at`.
-Dev does not write that timestamp, and a later cycle does not move it. Trading
-enabled does not write it. An unread flag set does not write it either. The
-protected production apply has not run, so the clock has not started.
+`prod_shadow_started_at` is 2026-10-06T01:22:36.255669Z. That timestamp stays
+where the first production cycle wrote it. Dev does not write it, a later
+cycle does not move it, and an unread flag set does not write it.
 
-A Monday schedule invokes the weekly assurance function. The schedule carries
-no figures. The function writes nothing in that case. A week document is the
-four-dimension scorecard, and only when the caller already has that scorecard.
+A Monday schedule reads stored decisions, outcomes, shadow trades, and an
+optional portfolio file. A failed read writes nothing. A successful read with
+no decisions and no trades writes that fact: empty signals, `no_trades`, and
+null benchmarks. A signal or trade whose decision is not stored is refused.
 Expectancy, payoff, profit factor, and recomputed Sharpe or Sortino stay
 unpublished. They remain named on the roadmap. They are not required to write
 the week, and they are not treated as done.
 
 The hourly position monitor, band rebalancing, and reserve deployment stay
-open. The roadmap checkbox for the production stack stays open until that
-protected apply has run.
+open.
 
 ## Engines
 

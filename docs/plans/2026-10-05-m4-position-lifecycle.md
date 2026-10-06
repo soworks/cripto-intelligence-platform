@@ -147,6 +147,6 @@ One synthetic lifecycle walks a decision through a position, a size, admission, 
 
 The workload stays SHADOW with trading disabled. It has no order credentials. Nothing in `src/cip` publishes `ExecutionAttempts`. The alarm stays armed, and missing data is not an attempt.
 
-The weekly report is the four-dimension scorecard. A Monday schedule invokes it. The schedule carries no figures, so that invocation writes nothing. A week file is written only from a scorecard the caller already has. Expectancy, payoff, profit factor, and recomputed Sharpe or Sortino stay unpublished. The roadmap names them. They are not dropped, and they are not required for the weekly document. The scorecard checkbox stays open because those formulas are not this report.
+The weekly report is the four-dimension scorecard. A Monday schedule reads stored decisions, outcomes, shadow trades, and an optional portfolio file. A failed read writes nothing. No decisions and no trades stay an explicit empty week, with null benchmarks. A signal or trade whose decision is missing is refused. Expectancy, payoff, profit factor, and recomputed Sharpe or Sortino stay unpublished. The roadmap names them. They are not dropped, and they are not required for the weekly document. The scorecard checkbox stays open because those formulas are not this report.
 
 #21 stays open. Score v2 weights stay absent. #22 stays open until production SHADOW is running and these checks are demonstrated.
