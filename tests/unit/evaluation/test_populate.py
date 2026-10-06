@@ -131,6 +131,23 @@ def _packet(
     return PacketCapture(symbol, candidate, clock or _clock(source="coingecko"))
 
 
+def _session_observation(
+    series: str, observed_at: datetime, source: datetime | None
+) -> Observation:
+    name = "btc_dominance" if series == "btc_dominance" else "stablecoin_supply_usd"
+    unit = "percent" if series == "btc_dominance" else "usd"
+    provider = "coingecko" if series == "btc_dominance" else "defillama"
+    return Observation(
+        series=series,
+        provider=provider,
+        source_timestamp=source,
+        observed_at=observed_at,
+        symbol=None,
+        values=((name, Decimal("1")),),
+        units=((name, unit),),
+    )
+
+
 def _observation(series: str, source: datetime | None) -> Observation:
     moment = datetime(SESSION.year, SESSION.month, SESSION.day, 12, tzinfo=UTC)
     if series == "funding":
@@ -290,27 +307,70 @@ def test_a_bar_after_the_session_is_rejected(tmp_path: Path) -> None:
     assert list(tmp_path.rglob("*.json")) == []
 
 
-def test_a_completed_session_bar_retrieved_after_the_close_is_accepted(tmp_path: Path) -> None:
+def test_a_historical_session_bar_retrieved_after_the_close_is_rejected(tmp_path: Path) -> None:
     ready = _ready(days=1)
     late = _clock(source="binance/klines", captured_at=LATER)
-    bars = tuple(
-        BarCapture(series.symbol, series.bars, late if series.symbol == "BTCUSDT" else series.clock)
-        for series in ready.bars
+    bars = (
+        BarCapture("BTCUSDT", ready.bars[0].bars, late),
+        *ready.bars[1:],
     )
-    result = _populate(tmp_path, _swap_bars(ready, bars))
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        _populate(tmp_path, _swap_bars(ready, bars))
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_a_later_session_accepts_a_bar_retrieved_after_its_close(tmp_path: Path) -> None:
+    session = date(2026, 10, 6)
+    close = datetime(2026, 10, 7, tzinfo=UTC)
+    later = close + timedelta(seconds=1)
+    observed = datetime(2026, 10, 6, 12, tzinfo=UTC)
+    clock = CaptureClock("binance/klines", close, later)
+    packet = _packet(
+        as_of=close,
+        gecko_stamp=close,
+        cmc_stamp=close,
+        clock=CaptureClock("coingecko", close, close),
+    )
+    captures = SessionCaptures(
+        universe=UniverseCapture(
+            (SYMBOL,), close, CaptureClock("binance/exchangeInfo", close, close)
+        ),
+        packets=(packet,),
+        candidate_absences=(),
+        bars=(
+            BarCapture("BTCUSDT", _history("BTCUSDT", days=1, end=session), clock),
+            BarCapture(SYMBOL, _history(SYMBOL, days=1, end=session), clock),
+        ),
+        bar_absences=(),
+        regime=(
+            RegimeCapture(_session_observation("btc_dominance", observed, close), observed),
+            RegimeCapture(_session_observation("stablecoin_supply", observed, None), observed),
+        ),
+        regime_failures=(),
+    )
+    result = populate_session(
+        tmp_path,
+        session,
+        later,
+        captures,
+        git_sha=SHA,
+        weights_present=False,
+    )
     assert result.readiness.ready is True
     assert result.manifest is not None
     btc = next(entry for entry in result.manifest.provenance if entry.name == "bars:BTCUSDT")
-    assert btc.captured_at == LATER
-    assert btc.source_timestamp == CLOSE
+    assert btc.captured_at == later
+    assert btc.source_timestamp == close
 
 
-def test_a_session_bar_retrieved_before_the_close_is_rejected(tmp_path: Path) -> None:
-    ready = _ready(days=1)
-    early = _clock(source="binance/klines", captured_at=CLOSE - timedelta(seconds=1))
-    bars = (BarCapture("BTCUSDT", ready.bars[0].bars, early), *ready.bars[1:])
+def test_a_later_session_bar_retrieved_before_the_close_is_rejected(tmp_path: Path) -> None:
+    session = date(2026, 10, 6)
+    close = datetime(2026, 10, 7, tzinfo=UTC)
+    early = CaptureClock("binance/klines", close, close - timedelta(seconds=1))
+    bars = (BarCapture("BTCUSDT", _history("BTCUSDT", days=1, end=session), early),)
+    captures = _swap_bars(_ready(days=1), bars)
     with pytest.raises(EvaluationError, match="session bar was retrieved before it closed"):
-        _populate(tmp_path, _swap_bars(ready, bars))
+        populate_session(tmp_path, session, close, captures, git_sha=SHA, weights_present=False)
     assert list(tmp_path.rglob("*.json")) == []
 
 
