@@ -99,7 +99,7 @@ Candidate bytes, when present, are a `ScanCandidate` document: `CandidateFacts`,
 - Consumes: `datetime`, `date`, `timedelta` from the standard library.
 - Produces: `session_close(session: date) -> datetime` and `InputPresence`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 from datetime import UTC, date, datetime
@@ -128,13 +128,13 @@ def test_a_boolean_session_is_refused() -> None:
         session_close(True)  # type: ignore[arg-type]
 ```
 
-- [ ] **Step 2: Run the test and confirm it fails**
+- [x] **Step 2: Run the test and confirm it fails**
 
 Run: `uv run pytest tests/unit/evaluation/test_session.py -q --no-cov`
 
 Expected: FAIL, `cip.evaluation.session` cannot be imported.
 
-- [ ] **Step 3: Implement the close**
+- [x] **Step 3: Implement the close**
 
 ```python
 """Closed-session readiness. A missing input stays missing."""
@@ -159,13 +159,13 @@ def session_close(session: date) -> datetime:
     return datetime.combine(session + timedelta(days=1), time.min, tzinfo=UTC)
 ```
 
-- [ ] **Step 4: Run the test and confirm it passes**
+- [x] **Step 4: Run the test and confirm it passes**
 
 Run: `uv run pytest tests/unit/evaluation/test_session.py -q --no-cov`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cip/evaluation/session.py tests/unit/evaluation/test_session.py
@@ -188,7 +188,7 @@ EOF
 
 `decision_notes` are reasons a later record would carry. They do not flip `ready` to false. `score_weights` is `absent` or `present`. This task only constructs the result; Task 3 fills it from stored inputs.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 from cip.evaluation.session import SessionReadiness
@@ -217,13 +217,13 @@ def test_a_block_is_not_ready() -> None:
 
 Add a model validator so `ready=True` with a non-empty `blocks` raises `EvaluationError` (`a ready session has no blocks`). Test that refusal with `SessionReadiness(ready=True, blocks=("snapshot_not_produced",), decision_notes=(), score_weights="absent")`.
 
-- [ ] **Step 2: Run the test and confirm it fails**
+- [x] **Step 2: Run the test and confirm it fails**
 
 Run: `uv run pytest tests/unit/evaluation/test_session.py::test_a_block_is_not_ready -q --no-cov`
 
 Expected: FAIL, `SessionReadiness` is not defined.
 
-- [ ] **Step 3: Implement the result**
+- [x] **Step 3: Implement the result**
 
 ```python
 from typing import Literal
@@ -248,13 +248,13 @@ class SessionReadiness(BaseModel):
         return self
 ```
 
-- [ ] **Step 4: Run the test and confirm it passes**
+- [x] **Step 4: Run the test and confirm it passes**
 
 Run: `uv run pytest tests/unit/evaluation/test_session.py -q --no-cov`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cip/evaluation/session.py tests/unit/evaluation/test_session.py
@@ -277,7 +277,7 @@ EOF
 
 `candidates[symbol] is None` means an explicit absence file was stored. A symbol in the snapshot that is missing from `candidate_files_present` or mapped to false is `not_produced`. `bar_months_present[symbol]` is true when that symbol's month parquet exists. Do not accept a `float` timestamp or a boolean where a count is required; reuse the existing model validators by constructing `ScanCandidate` and `UniverseSnapshot` in the tests.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Cover these cases, each as its own test:
 
@@ -301,19 +301,19 @@ Cover these cases, each as its own test:
 
 Use session `date(2026, 10, 5)`, close `datetime(2026, 10, 6, tzinfo=UTC)`, and `as_of` equal to that close unless the test says otherwise. Build the smallest `DailyBar`, `ScanCandidate`, and `Observation` the existing constructors accept. A one-bar BTC series whose `open_date` is the session date is enough for cases that are not about the 200-day window.
 
-- [ ] **Step 2: Run the tests and confirm they fail**
+- [x] **Step 2: Run the tests and confirm they fail**
 
 Run: `uv run pytest tests/unit/evaluation/test_session.py -q --no-cov`
 
 Expected: FAIL, `assess_session` is not defined.
 
-- [ ] **Step 3: Implement `assess_session`**
+- [x] **Step 3: Implement `assess_session`**
 
 Walk the rules in the Contract section. Return one `SessionReadiness`. Sort `blocks` and `decision_notes` so the same inputs produce the same tuple order. Do not call `run_daily_scan`, `combine`, `classify`, or `assess`. Do not import a network client.
 
 A regime observation is for this session when `observed_at` in UTC has the session date. Its `source_timestamp`, when present, must be at or before the close. A `source_timestamp` after the close is `lookahead` even if `observed_at` is on the session date.
 
-- [ ] **Step 4: Run the tests and the suite**
+- [x] **Step 4: Run the tests and the suite**
 
 Run: `uv run pytest tests/unit/evaluation/test_session.py -q --no-cov`
 
@@ -323,7 +323,7 @@ Run: `uv run ruff check src/cip/evaluation/session.py tests/unit/evaluation/test
 
 Expected: ruff and mypy clean, coverage 100%.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cip/evaluation/session.py tests/unit/evaluation/test_session.py
