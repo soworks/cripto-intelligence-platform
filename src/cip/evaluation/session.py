@@ -60,6 +60,7 @@ def assess_session(
     observations: Sequence[Observation],
     regime_failures: frozenset[str],
     weights_present: bool,
+    bar_absences: Mapping[str, bool] | None = None,
 ) -> SessionReadiness:
     """Say whether this closed session can be evaluated. Do not evaluate it."""
     close = session_close(session)
@@ -69,7 +70,15 @@ def assess_session(
     if as_of < close:
         blocks.add("session_not_closed")
     symbols = _snapshot_symbols(snapshot, session, close, blocks)
-    _bars(symbols, session, bars, bar_months_present, blocks, notes)
+    _bars(
+        symbols,
+        session,
+        bars,
+        bar_months_present,
+        {} if bar_absences is None else bar_absences,
+        blocks,
+        notes,
+    )
     _candidates(symbols, close, candidates, candidate_files_present, blocks, notes)
     _regime(session, close, observations, regime_failures, blocks)
     if not weights_present:
@@ -113,14 +122,15 @@ def _bars(
     session: date,
     bars: Mapping[str, Sequence[DailyBar]],
     months_present: Mapping[str, bool],
+    absences: Mapping[str, bool],
     blocks: set[str],
     notes: set[str],
 ) -> None:
-    _one_symbol_bars(_BTC, session, bars, months_present, blocks, notes, btc=True)
+    _one_symbol_bars(_BTC, session, bars, months_present, absences, blocks, notes, btc=True)
     for symbol in symbols:
         if symbol == _BTC:
             continue
-        _one_symbol_bars(symbol, session, bars, months_present, blocks, notes, btc=False)
+        _one_symbol_bars(symbol, session, bars, months_present, absences, blocks, notes, btc=False)
 
 
 def _one_symbol_bars(
@@ -128,6 +138,7 @@ def _one_symbol_bars(
     session: date,
     bars: Mapping[str, Sequence[DailyBar]],
     months_present: Mapping[str, bool],
+    absences: Mapping[str, bool],
     blocks: set[str],
     notes: set[str],
     *,
@@ -142,6 +153,9 @@ def _one_symbol_bars(
     if any(bar.open_date > session for bar in series):
         blocks.add(f"bars_lookahead:{symbol}")
     if not months_present.get(symbol, False):
+        if not btc and absences.get(symbol, False):
+            notes.add(f"daily_bar_absent:{symbol}")
+            return
         blocks.add("btc_bars_not_produced" if btc else f"bars_not_produced:{symbol}")
         return
     if any(bar.open_date == session for bar in series):

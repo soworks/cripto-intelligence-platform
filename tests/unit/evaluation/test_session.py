@@ -262,6 +262,20 @@ def test_a_stored_month_without_the_session_bar_stays_a_decision_note() -> None:
     assert result.decision_notes == (f"daily_bar_absent:{SYMBOL}",)
 
 
+def test_an_explicit_daily_bar_absence_is_not_a_missing_producer() -> None:
+    present = {"BTCUSDT": True, SYMBOL: False}
+    result = _assess(bar_months_present=present, bar_absences={SYMBOL: True})
+    assert result.ready is True
+    assert result.blocks == ()
+    assert result.decision_notes == (f"daily_bar_absent:{SYMBOL}",)
+
+
+def test_an_explicit_btc_bar_absence_still_blocks_the_session() -> None:
+    present = {"BTCUSDT": False, SYMBOL: True}
+    result = _assess(bar_months_present=present, bar_absences={"BTCUSDT": True})
+    assert result.blocks == ("btc_bars_not_produced",)
+
+
 def test_a_missing_candidate_file_is_not_an_absence() -> None:
     result = _assess(candidate_files_present={SYMBOL: False})
     assert result.blocks == (f"candidate_not_produced:{SYMBOL}",)
