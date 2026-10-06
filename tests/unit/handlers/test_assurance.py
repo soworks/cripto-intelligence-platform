@@ -80,6 +80,18 @@ def test_weekly_writes_an_empty_production_week_once(monkeypatch: pytest.MonkeyP
     assert json.loads(body)["week_ending"] == "2026-10-11"
 
 
+def test_weekly_refuses_a_manual_event_before_reading(monkeypatch: pytest.MonkeyPatch) -> None:
+    def client(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the store must not be read")
+
+    monkeypatch.setenv("DATA_BUCKET", BUCKET)
+    monkeypatch.setattr(assurance.boto3, "client", client)
+    with pytest.raises(ScorecardError, match="not invented"):
+        weekly({"trigger": "manual"}, FakeLambdaContext())
+    with pytest.raises(ScorecardError, match="not invented"):
+        weekly({}, FakeLambdaContext())
+
+
 def test_weekly_without_a_bucket_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATA_BUCKET", raising=False)
     with pytest.raises(ScorecardError, match="bucket is not configured"):
