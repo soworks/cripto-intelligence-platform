@@ -4,7 +4,7 @@ terraform {
     aws = { source = "hashicorp/aws", version = "~> 6.67" }
   }
   backend "s3" {
-    key          = "env/dev/terraform.tfstate"
+    key          = "env/prod/terraform.tfstate"
     region       = "us-east-1"
     use_lockfile = true
     encrypt      = true
@@ -14,18 +14,18 @@ terraform {
 provider "aws" {
   region = var.region
   default_tags {
-    tags = { project = "cip", env = "dev", managed_by = "terraform" }
+    tags = { project = "cip", env = "prod", managed_by = "terraform" }
   }
 }
 
 module "workload" {
   source = "../../modules/workload"
 
-  env                 = "dev"
+  env                 = "prod"
   region              = var.region
   alert_email         = var.alert_email
   artifact_path       = var.artifact_path
-  deletion_protection = false
-  log_retention_days  = 14
+  deletion_protection = true
+  log_retention_days  = 90
   schedule_enabled    = true
 }

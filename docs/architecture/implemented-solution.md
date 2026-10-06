@@ -157,10 +157,17 @@ flowchart TD
 - **Pilot executions** record an owner purchase on `ALPHA_PILOT_2026_10` between 2026-10-19 and 2026-10-31. The cap is 500 USD. The note has no order id.
 - **Scorecard** reports decision integrity, signal quality, trade quality, and portfolio quality as separate sections. Excess is absolute return minus the BTC return. An empty trade list is `no_trades`. A missing comparison is null. There is no grade and no score weight.
 
+Dev and prod call one shared workload module. Dev keeps 14-day logs and no
+deletion protection. Prod keeps 90-day logs and deletion protection. Both run
+the hourly shadow clock and stay in SHADOW, with trading disabled. A count of
+`CIP/Execution` `ExecutionAttempts` above zero alarms. Missing data is not an
+attempt. The production apply is a protected workflow. It is not part of the
+dev deploy.
+
 Applying a fill or an exit name as a position transition is a later caller.
-The lifecycle plan's remaining slice is prod shadow. The hourly position
-monitor is still a roadmap item. Band rebalancing, reserve deployment, and the
-weekly scorecard job are still open.
+The hourly position monitor is still a roadmap item. Band rebalancing, reserve
+deployment, and the weekly scorecard job are still open. The roadmap checkbox
+for the production stack stays open until that protected apply has run.
 
 ## Engines
 
