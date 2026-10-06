@@ -120,7 +120,11 @@ only from stored inputs.
 
 The same hourly clock can run in production. That environment keeps its data,
 uses 90-day logs, and alarms if an execution attempt is recorded. Starting it
-is a protected deploy. It does not place an order.
+is a protected deploy. It does not place an order. The production shadow clock
+is the time of the first successful production cycle. A merge does not start it.
+Once a week, the four scorecard results can be written down for a week that
+already has them. A week with nothing stored does not become a zero report.
+Expectancy, payoff, and profit factor are still not part of that note.
 The score weights stay unset until the evidence can support them.
 
 Diagrams of the flows and the engines are in the
