@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,6 +15,7 @@ from cip.config.flags import ExecutionFlags, read_execution_flags
 from cip.domain.errors import DuplicateEventError
 from cip.domain.events import EventType, LedgerEvent
 from cip.domain.policy import LoadedPolicy, load_policy
+from cip.evaluation.shadow_clock import note_prod_shadow_clock
 from cip.persistence.ledger import LedgerRepository
 
 if TYPE_CHECKING:
@@ -126,7 +128,18 @@ def start_scan(event: dict[str, Any], context: LambdaContext) -> dict[str, str]:
 
 @logger.inject_lambda_context
 def complete_scan(event: dict[str, Any], context: LambdaContext) -> dict[str, str]:
-    return run_complete_scan(event, _ledger())
+    result = run_complete_scan(event, _ledger())
+    if os.environ.get("CIP_ENV") == "prod":
+        flags = _flags()
+        note_prod_shadow_clock(
+            _ledger(),
+            environment="prod",
+            mode=str(flags.mode),
+            trading_enabled=flags.trading_enabled,
+            completed_at=datetime.now(UTC),
+            policy_version=str(event["policy_version"]),
+        )
+    return result
 
 
 @logger.inject_lambda_context

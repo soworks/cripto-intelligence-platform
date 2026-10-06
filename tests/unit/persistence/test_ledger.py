@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 
-from cip.domain.errors import DuplicateEventError
+from cip.domain.errors import DuplicateEventError, InvalidEventError
 from cip.domain.events import EventType, LedgerEvent
 from cip.persistence.ledger import LedgerRepository
 
@@ -142,3 +142,27 @@ def test_list_by_correlation_follows_pagination() -> None:
     table = PagedTable()
     assert LedgerRepository(table).list_by_correlation("corr-1") == [first, second]  # type: ignore[arg-type]
     assert table.calls[1]["ExclusiveStartKey"] == {"PK": "page-2"}
+
+
+def test_existing_reads_the_event_a_retry_collided_with(ledger_table: Any) -> None:
+    repo = LedgerRepository(ledger_table)
+    event = _event(EventType.SCAN_STARTED, T0, idempotency_key="once")
+    repo.append(event)
+
+    assert repo.existing(event.event_id) == event
+
+
+def test_existing_refuses_a_missing_guard(ledger_table: Any) -> None:
+    with pytest.raises(InvalidEventError, match="missing"):
+        LedgerRepository(ledger_table).existing("absent")
+
+
+def test_existing_refuses_a_guard_whose_event_was_removed(ledger_table: Any) -> None:
+    repo = LedgerRepository(ledger_table)
+    event = _event(EventType.SCAN_STARTED, T0, idempotency_key="once")
+    repo.append(event)
+    item = event.to_item()
+    ledger_table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+
+    with pytest.raises(InvalidEventError, match="missing"):
+        repo.existing(event.event_id)

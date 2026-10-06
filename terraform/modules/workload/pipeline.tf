@@ -81,6 +81,7 @@ module "lambda" {
   lambda_role = module.pipeline_lambda_role.arn
 
   environment_variables = {
+    CIP_ENV                 = local.env
     LEDGER_TABLE            = module.ledger_table.dynamodb_table_id
     FLAGS_PREFIX            = local.flags_prefix
     POLICY_PATH             = "/var/task/policies/investment-policy.yaml"

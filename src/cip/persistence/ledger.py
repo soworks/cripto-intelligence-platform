@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from cip.domain.errors import DuplicateEventError
+from cip.domain.errors import DuplicateEventError, InvalidEventError
 from cip.domain.events import LedgerEvent
 
 if TYPE_CHECKING:
@@ -63,3 +63,21 @@ class LedgerRepository:
             start_key = response.get("LastEvaluatedKey")
             if start_key is None:
                 return events
+
+    def existing(self, event_id: str) -> LedgerEvent:
+        """Read the event a duplicate write collided with. The read is consistent."""
+        guard = self._table.get_item(
+            Key={"PK": f"IDEMP#{event_id}", "SK": "IDEMP"},
+            ConsistentRead=True,
+        )
+        pointer = guard.get("Item")
+        if pointer is None:
+            raise InvalidEventError("ledger event is missing")
+        stored = self._table.get_item(
+            Key={"PK": pointer["event_pk"], "SK": pointer["event_sk"]},
+            ConsistentRead=True,
+        )
+        item = stored.get("Item")
+        if item is None:
+            raise InvalidEventError("ledger event is missing")
+        return LedgerEvent.from_item(item)
