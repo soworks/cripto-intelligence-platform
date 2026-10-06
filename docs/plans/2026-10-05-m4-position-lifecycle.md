@@ -1,7 +1,7 @@
 # M4 — Position lifecycle and shadow portfolio
 
 **Date:** 2026-10-05
-**Status:** Slices 1–7 are merged ([#54](https://github.com/soworks/crypto-intelligence-platform/issues/54), [#57](https://github.com/soworks/crypto-intelligence-platform/issues/57), [#59](https://github.com/soworks/crypto-intelligence-platform/issues/59), [#61](https://github.com/soworks/crypto-intelligence-platform/issues/61), [#63](https://github.com/soworks/crypto-intelligence-platform/issues/63), [#65](https://github.com/soworks/crypto-intelligence-platform/issues/65), [#67](https://github.com/soworks/crypto-intelligence-platform/issues/67)). Slice 8 is merged ([#71](https://github.com/soworks/crypto-intelligence-platform/issues/71)). Slice 9 is merged ([#73](https://github.com/soworks/crypto-intelligence-platform/issues/73)). Slice 10 is merged ([#75](https://github.com/soworks/crypto-intelligence-platform/issues/75)). Slice 11 is prod shadow ([#77](https://github.com/soworks/crypto-intelligence-platform/issues/77)). [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
+**Status:** Slices 1–11 are merged. The operational exit is [#79](https://github.com/soworks/crypto-intelligence-platform/issues/79). [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) stays open until production SHADOW has completed a cycle and that issue's checks are demonstrated. No live orders. Score v2 weights stay unfrozen. [#21](https://github.com/soworks/crypto-intelligence-platform/issues/21) stays open.
 
 The roadmap in `docs/plans/2026-10-03-roadmap.md` is the requirements source. This plan only sequences the work. [#22](https://github.com/soworks/crypto-intelligence-platform/issues/22) is the parent. Implementation issues do not complete it.
 
@@ -19,7 +19,7 @@ Each slice is one implementation issue. Later slices call the portfolio book and
 8. **Core sleeve.** Weekly BTC/ETH mix from the existing DCA engine, on the core budget only. The reserve is USDC until a later rule deploys it. [#71](https://github.com/soworks/crypto-intelligence-platform/issues/71). Merged.
 9. **Manual pilot executions.** Owner-executed October purchases recorded on `ALPHA_PILOT_2026_10`. They are not executor orders. [#73](https://github.com/soworks/crypto-intelligence-platform/issues/73). Merged.
 10. **Engine Assurance Scorecard.** Four dimensions, reported separately, read from stored records. A recommendation is not a grade from absolute P&L. [#75](https://github.com/soworks/crypto-intelligence-platform/issues/75). Merged.
-11. **Prod shadow.** Shared Terraform module, prod stack, and the shadow clock. An execution attempt while SHADOW alarms. [#77](https://github.com/soworks/crypto-intelligence-platform/issues/77). This slice.
+11. **Prod shadow.** Shared Terraform module, prod stack, and the shadow clock. An execution attempt while SHADOW alarms. [#77](https://github.com/soworks/crypto-intelligence-platform/issues/77). Merged.
 
 Holdings stay approximate until the owner supplies the inventory. Do not invent quantities. `max_holding_days` stays 56. October capital is not the monthly budget.
 
@@ -136,3 +136,17 @@ Moving the existing dev objects into the module uses `moved` blocks. A plan that
 ## Out of slice 11
 
 An executor, live orders, Score v2 weights, the hourly position monitor, and applying the production stack from the dev deploy. #21 stays open.
+
+## Operational closure
+
+[#79](https://github.com/soworks/crypto-intelligence-platform/issues/79) is not a twelfth slice. Slices 1–11 stay closed.
+
+`prod_shadow_started_at` is the timestamp of the first successful production SHADOW cycle with trading disabled. The complete-scan function writes it only when `CIP_ENV` is `prod`. A retry returns the original timestamp. Dev does not write it. The operational closure does not invent a timestamp, and it does not dispatch the protected production apply.
+
+One synthetic lifecycle walks a decision through a position, a size, admission, the symbol filter, a shadow entry, OPEN, the max-holding exit, a shadow exit, CLOSED, a forward outcome, and the four-dimension scorecard. Each persisted write is replayed. The same bytes stay. A different payload is refused. The trace keeps the decision, the policy version, the transitions, both fills, the exit reason, the costs, and the outcome. No order id appears.
+
+The workload stays SHADOW with trading disabled. It has no order credentials. Nothing in `src/cip` publishes `ExecutionAttempts`. The alarm stays armed, and missing data is not an attempt.
+
+The weekly report is the four-dimension scorecard. A Monday schedule invokes it. The schedule carries no figures, so that invocation writes nothing. A week file is written only from a scorecard the caller already has. Expectancy, payoff, profit factor, and recomputed Sharpe or Sortino stay unpublished. The roadmap names them. They are not dropped, and they are not required for the weekly document. The scorecard checkbox stays open because those formulas are not this report.
+
+#21 stays open. Score v2 weights stay absent. #22 stays open until production SHADOW is running and these checks are demonstrated.

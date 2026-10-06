@@ -164,10 +164,21 @@ the hourly shadow clock and stay in SHADOW, with trading disabled. A count of
 attempt. The production apply is a protected workflow. It is not part of the
 dev deploy.
 
-Applying a fill or an exit name as a position transition is a later caller.
-The hourly position monitor is still a roadmap item. Band rebalancing, reserve
-deployment, and the weekly scorecard job are still open. The roadmap checkbox
-for the production stack stays open until that protected apply has run.
+The first successful production SHADOW cycle records `prod_shadow_started_at`.
+Dev does not write that timestamp, and a later cycle does not move it. Trading
+enabled does not write it. The protected production apply has not run, so the
+clock has not started.
+
+A Monday schedule invokes the weekly assurance function. The schedule carries
+no figures. The function writes nothing in that case. A week document is the
+four-dimension scorecard, and only when the caller already has that scorecard.
+Expectancy, payoff, profit factor, and recomputed Sharpe or Sortino stay
+unpublished. They remain named on the roadmap. They are not required to write
+the week, and they are not treated as done.
+
+The hourly position monitor, band rebalancing, and reserve deployment stay
+open. The roadmap checkbox for the production stack stays open until that
+protected apply has run.
 
 ## Engines
 
@@ -212,11 +223,11 @@ flowchart TB
 | --- | --- | --- |
 | Market data | `cip.adapters` | Public Binance client, weight-aware limiter, and parsers for exchange info, tickers, klines, and depth |
 | History | `cip.history` | Survivorship-free daily klines, listing continuity, and the point-in-time universe |
-| Evaluation | `cip.evaluation` | Daily scan, features, gates, regime, score, decision store, outcomes, the coefficient study, and the four-part scorecard |
+| Evaluation | `cip.evaluation` | Daily scan, features, gates, regime, score, decision store, outcomes, the coefficient study, the four-part scorecard, and the production shadow clock |
 | Portfolio | `cip.portfolio` | Book, position state, exits, sizing, limits, symbol filter, shadow fills, core weeks, and pilot executions |
 | Persistence | `cip.persistence` | Append-only ledger writes, and the position row plus its ledger event in one transaction |
 | Backtest | `cip.backtest` | BTC and BTC/ETH DCA replay, portfolio metrics, and a simulator that calls eligibility, score, and exit contracts |
-| Handlers | `cip.handlers` | Lambda entry points for the scan skeleton, the market probe, and the recorders |
+| Handlers | `cip.handlers` | Lambda entry points for the scan skeleton, the market probe, the recorders, and the weekly assurance schedule |
 
 `cip.domain` holds the policy and ledger events. `cip.recorders` collects the
 forward series the regime classifier reads. `cip.config` reads the SSM flags.
