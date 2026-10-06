@@ -118,7 +118,9 @@ An hourly job in the dev environment records that a cycle started and
 finished. It does not rank coins. Ranking belongs to the daily decision, and
 only from stored inputs.
 
-Still ahead: a production shadow environment.
+The same hourly clock can run in production. That environment keeps its data,
+uses 90-day logs, and alarms if an execution attempt is recorded. Starting it
+is a protected deploy. It does not place an order.
 The score weights stay unset until the evidence can support them.
 
 Diagrams of the flows and the engines are in the
