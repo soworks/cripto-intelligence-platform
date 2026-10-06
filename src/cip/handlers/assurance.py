@@ -82,6 +82,8 @@ def weekly(event: dict[str, Any], context: LambdaContext) -> dict[str, str]:
     bucket = os.environ.get("DATA_BUCKET")
     if not bucket:
         raise ScorecardError("weekly evidence bucket is not configured")
+    if set(event) != {"trigger"} or event.get("trigger") != "schedule":
+        raise ScorecardError("a weekly report is not invented from a schedule")
     client = boto3.client("s3")
     evidence = load_week_evidence(client, bucket)
     published = run_weekly_assurance(
