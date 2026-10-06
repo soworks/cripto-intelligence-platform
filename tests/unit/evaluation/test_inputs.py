@@ -355,6 +355,26 @@ def test_a_candidate_packet_and_absence_together_are_unusable(tmp_path: Path) ->
         load_session(tmp_path, SESSION)
 
 
+def test_a_writer_temp_file_does_not_hide_the_session(tmp_path: Path) -> None:
+    packet = _candidate()
+    write_candidate(tmp_path, SESSION, packet)
+    leftover = _candidate_path(tmp_path).with_name(f".symbol={SYMBOL}.json.1.tmp")
+    leftover.write_text("partial")
+    assert load_session(tmp_path, SESSION).candidates[SYMBOL] == packet
+
+
+def test_a_snapshot_symbol_must_be_a_ticker(tmp_path: Path) -> None:
+    snapshot = UniverseSnapshot.model_construct(
+        session=SESSION,
+        symbols=("../SOL",),
+        observed_at=CLOSE,
+        provenance="stored-exchange-info",
+    )
+    with pytest.raises(EvaluationError, match="symbol must be 1 to 20 uppercase letters or digits"):
+        write_universe(tmp_path, snapshot)
+    assert list(tmp_path.rglob("*.json")) == []
+
+
 def test_an_unknown_candidate_filename_is_unusable(tmp_path: Path) -> None:
     directory = _candidate_path(tmp_path).parent
     directory.mkdir(parents=True)

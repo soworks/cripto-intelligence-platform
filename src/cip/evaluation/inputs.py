@@ -54,6 +54,8 @@ def write_universe(root: Path, snapshot: UniverseSnapshot) -> bool:
         raise EvaluationError("snapshot is after the close")
     if len(snapshot.symbols) != len(set(snapshot.symbols)):
         raise EvaluationError("universe snapshot repeats a symbol")
+    for symbol in snapshot.symbols:
+        _symbol(symbol)
     return _create(root / _universe_key(snapshot.session), _body(snapshot))
 
 
@@ -161,8 +163,8 @@ def _create(path: Path, body: bytes) -> bool:
         return _same(path, body)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_bytes(body)
     try:
+        temporary.write_bytes(body)
         try:
             os.link(temporary, path)
         except FileExistsError:
@@ -183,6 +185,8 @@ def _names(directory: Path) -> set[str]:
         return set()
     found: set[str] = set()
     for path in directory.iterdir():
+        if path.name.startswith("."):
+            continue
         matched = _NAME.fullmatch(path.name)
         if matched is None:
             raise EvaluationError("session input is unusable")
