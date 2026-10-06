@@ -166,8 +166,8 @@ dev deploy.
 
 The first successful production SHADOW cycle records `prod_shadow_started_at`.
 Dev does not write that timestamp, and a later cycle does not move it. Trading
-enabled does not write it. The protected production apply has not run, so the
-clock has not started.
+enabled does not write it. An unread flag set does not write it either. The
+protected production apply has not run, so the clock has not started.
 
 A Monday schedule invokes the weekly assurance function. The schedule carries
 no figures. The function writes nothing in that case. A week document is the

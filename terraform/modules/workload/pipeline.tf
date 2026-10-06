@@ -37,6 +37,11 @@ module "pipeline_lambda_role" {
       actions   = ["dynamodb:PutItem"]
       resources = [module.ledger_table.dynamodb_table_arn]
     }
+    # A later cycle reads the first clock event. PutItem cannot do that.
+    LedgerRead = {
+      actions   = ["dynamodb:GetItem"]
+      resources = [module.ledger_table.dynamodb_table_arn]
+    }
     FlagsRead = {
       actions   = ["ssm:GetParameters"]
       resources = ["arn:aws:ssm:${var.region}:${local.account_id}:parameter${local.flags_prefix}/*"]

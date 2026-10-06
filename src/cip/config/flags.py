@@ -19,6 +19,8 @@ class ExecutionFlags:
     mode: ExecutionMode
     trading_enabled: bool
     kill_switch_active: bool
+    # False when the parameters could not be read. That is not a confirmed SHADOW cycle.
+    confirmed: bool = True
 
     @property
     def may_place_live_orders(self) -> bool:
@@ -30,7 +32,10 @@ class ExecutionFlags:
 
 
 FAIL_CLOSED = ExecutionFlags(
-    mode=ExecutionMode.SHADOW, trading_enabled=False, kill_switch_active=True
+    mode=ExecutionMode.SHADOW,
+    trading_enabled=False,
+    kill_switch_active=True,
+    confirmed=False,
 )
 
 

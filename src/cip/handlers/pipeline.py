@@ -131,14 +131,16 @@ def complete_scan(event: dict[str, Any], context: LambdaContext) -> dict[str, st
     result = run_complete_scan(event, _ledger())
     if os.environ.get("CIP_ENV") == "prod":
         flags = _flags()
-        note_prod_shadow_clock(
-            _ledger(),
-            environment="prod",
-            mode=str(flags.mode),
-            trading_enabled=flags.trading_enabled,
-            completed_at=datetime.now(UTC),
-            policy_version=str(event["policy_version"]),
-        )
+        # An unread flag set is fail-closed SHADOW. It must not start the clock.
+        if flags.confirmed:
+            note_prod_shadow_clock(
+                _ledger(),
+                environment="prod",
+                mode=str(flags.mode),
+                trading_enabled=flags.trading_enabled,
+                completed_at=datetime.now(UTC),
+                policy_version=str(event["policy_version"]),
+            )
     return result
 
 
