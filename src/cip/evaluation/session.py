@@ -134,6 +134,11 @@ def _one_symbol_bars(
     btc: bool,
 ) -> None:
     series = bars.get(symbol, ())
+    if any(bar.symbol != symbol for bar in series):
+        blocks.add(f"bar_symbol_mismatch:{symbol}")
+    dates = [bar.open_date for bar in series]
+    if len(dates) != len(set(dates)):
+        blocks.add(f"duplicate_bar_date:{symbol}")
     if any(bar.open_date > session for bar in series):
         blocks.add(f"bars_lookahead:{symbol}")
     if not months_present.get(symbol, False):
@@ -163,6 +168,8 @@ def _candidates(
         if packet is None:
             notes.add(f"missing_candidate:{symbol}")
             continue
+        if packet.facts.symbol != symbol:
+            blocks.add(f"candidate_symbol_mismatch:{symbol}")
         if packet.market.as_of > close:
             blocks.add(f"candidate_lookahead:{symbol}")
         for cap, stamp in (
