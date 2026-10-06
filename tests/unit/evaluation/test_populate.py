@@ -1,11 +1,13 @@
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+import cip.evaluation.populate as population
 from cip.domain.errors import EvaluationError
 from cip.evaluation.eligibility import CandidateFacts
 from cip.evaluation.fundamentals import CmcReading, CoinGeckoReading, UnlockReading
@@ -193,6 +195,14 @@ def _manifest(tmp_path: Path) -> Path:
     return tmp_path / "sessions" / "date=2026-10-05" / "manifest.json"
 
 
+def _stored(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_a_closed_capture_becomes_ready_and_names_the_frozen_inputs(tmp_path: Path) -> None:
     result = _populate(tmp_path, _ready())
     assert result.readiness.ready is True
@@ -366,6 +376,8 @@ def test_an_explicit_absence_stays_a_note_on_a_ready_session(tmp_path: Path) -> 
         "score_weights_not_frozen",
     )
     assert result.manifest is not None
+    again = _populate(tmp_path, captures, as_of=CLOSE + timedelta(hours=1), git_sha="b" * 40)
+    assert again.manifest == result.manifest
 
 
 def test_partial_symbol_coverage_returns_the_missing_producers(tmp_path: Path) -> None:
@@ -665,7 +677,7 @@ def test_a_repeated_bar_absence_is_rejected(tmp_path: Path) -> None:
         ready.regime,
         (),
     )
-    with pytest.raises(EvaluationError, match="bar absence conflicts with stored bars"):
+    with pytest.raises(EvaluationError, match="conflicting absence evidence"):
         _populate(tmp_path, captures)
 
 
@@ -831,6 +843,198 @@ def test_a_different_bar_payload_is_not_replaced(tmp_path: Path) -> None:
     (directory / "symbol=BTCUSDT.json").write_bytes(b"{}")
     with pytest.raises(EvaluationError, match="already exists with a different payload"):
         _populate(tmp_path, _ready(days=1))
+
+
+def test_a_finalized_session_rejects_a_new_file_before_writing_it(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    _populate(tmp_path, ready)
+    stored = _stored(tmp_path)
+    extra = BarCapture("ADAUSDT", (_bar("ADAUSDT", SESSION),), _clock(source="binance/klines"))
+    with pytest.raises(EvaluationError, match="different payload"):
+        _populate(tmp_path, _swap_bars(ready, (*ready.bars, extra)))
+    assert _stored(tmp_path) == stored
+    assert replay_session(tmp_path, SESSION).readiness.ready is True
+
+
+def test_a_finalized_session_rejects_a_regime_failure_swap(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    _populate(tmp_path, ready)
+    stored = _stored(tmp_path)
+    failure = CollectionFailure(
+        series="btc_dominance",
+        provider="coingecko",
+        observed_at=datetime(SESSION.year, SESSION.month, SESSION.day, 12, tzinfo=UTC),
+        symbol=None,
+        error="host returned 451",
+    )
+    captures = SessionCaptures(
+        ready.universe,
+        ready.packets,
+        (),
+        ready.bars,
+        (),
+        (ready.regime[1],),
+        (FailureCapture(failure, CLOSE),),
+    )
+    with pytest.raises(EvaluationError, match="different payload"):
+        _populate(tmp_path, captures)
+    assert _stored(tmp_path) == stored
+    assert replay_session(tmp_path, SESSION).readiness.ready is True
+
+
+def test_a_finalized_session_rejects_a_removed_universe(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    _populate(tmp_path, ready)
+    stored = _stored(tmp_path)
+    captures = SessionCaptures(None, ready.packets, (), ready.bars, (), ready.regime, ())
+    with pytest.raises(EvaluationError, match="different payload"):
+        _populate(tmp_path, captures)
+    assert _stored(tmp_path) == stored
+
+
+def test_an_earlier_regime_observation_does_not_occupy_the_series(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    early = replace(
+        ready.regime[0].observation,
+        observed_at=datetime(2026, 10, 4, 12, tzinfo=UTC),
+    )
+    captures = _swap_regime(ready, (RegimeCapture(early, CLOSE), ready.regime[1]))
+    result = _populate(tmp_path, captures)
+    assert "regime_not_produced:btc_dominance" in result.readiness.blocks
+    regime = tmp_path / "sessions" / "date=2026-10-05" / "regime"
+    assert not (regime / "btc_dominance.json").exists()
+    sealed = _populate(tmp_path, ready)
+    assert sealed.readiness.ready is True
+    assert (regime / "btc_dominance.json").is_file()
+
+
+def test_an_earlier_regime_failure_does_not_occupy_the_series(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    failure = CollectionFailure(
+        series="btc_dominance",
+        provider="coingecko",
+        observed_at=datetime(2026, 10, 4, 12, tzinfo=UTC),
+        symbol=None,
+        error="host returned 451",
+    )
+    captures = SessionCaptures(
+        ready.universe,
+        ready.packets,
+        (),
+        ready.bars,
+        (),
+        (ready.regime[1],),
+        (FailureCapture(failure, CLOSE),),
+    )
+    result = _populate(tmp_path, captures)
+    assert "regime_not_produced:btc_dominance" in result.readiness.blocks
+    regime = tmp_path / "sessions" / "date=2026-10-05" / "regime"
+    assert not (regime / "btc_dominance.failure.json").exists()
+    sealed = _populate(tmp_path, ready)
+    assert sealed.readiness.ready is True
+
+
+def test_a_regime_observation_at_the_next_midnight_writes_nothing(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    late = replace(ready.regime[0].observation, observed_at=CLOSE)
+    captures = _swap_regime(ready, (RegimeCapture(late, CLOSE), ready.regime[1]))
+    result = _populate(tmp_path, captures)
+    assert "regime_lookahead:btc_dominance" in result.readiness.blocks
+    assert result.manifest is None
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_a_btc_absence_does_not_satisfy_the_session_bar(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    bars = tuple(series for series in ready.bars if series.symbol != "BTCUSDT")
+    captures = SessionCaptures(
+        ready.universe,
+        ready.packets,
+        (),
+        bars,
+        (AbsenceCapture("BTCUSDT", LATER, "binance/klines"),),
+        ready.regime,
+        (),
+    )
+    result = _populate(tmp_path, captures)
+    assert "btc_bars_not_produced" in result.readiness.blocks
+    assert result.manifest is None
+    absence = (
+        tmp_path
+        / "sessions"
+        / "date=2026-10-05"
+        / "absences"
+        / "input=daily_bar"
+        / "symbol=BTCUSDT.json"
+    )
+    assert absence.is_file()
+
+
+def test_a_repeated_candidate_absence_is_rejected(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    absence = AbsenceCapture(OTHER, CLOSE, "coingecko")
+    captures = SessionCaptures(
+        ready.universe,
+        ready.packets,
+        (absence, absence),
+        ready.bars,
+        (),
+        ready.regime,
+        (),
+    )
+    with pytest.raises(EvaluationError, match="conflicting absence evidence"):
+        _populate(tmp_path, captures)
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_a_bar_symbol_cannot_leave_the_session_directory(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    escaped = BarCapture("../OUTSIDE", ready.bars[0].bars, ready.bars[0].clock)
+    with pytest.raises(EvaluationError, match="uppercase letters or digits"):
+        _populate(tmp_path, _swap_bars(ready, (escaped, *ready.bars[1:])))
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_a_manifest_that_appears_during_the_write_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = _ready(days=1)
+    first = _populate(tmp_path, ready)
+    stored = _manifest(tmp_path).read_bytes()
+    _manifest(tmp_path).unlink()
+    real = population._write
+
+    def restore(root: Path, session: date, plan: object) -> None:
+        _manifest(tmp_path).write_bytes(stored)
+        monkeypatch.setattr(population, "_write", real)
+        real(root, session, plan)
+
+    monkeypatch.setattr(population, "_write", restore)
+    second = _populate(tmp_path, ready, as_of=CLOSE + timedelta(hours=1), git_sha="b" * 40)
+    assert second.manifest == first.manifest
+    assert _manifest(tmp_path).read_bytes() == stored
+
+
+def test_a_different_manifest_that_appears_during_the_write_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = _ready(days=1)
+    _populate(tmp_path, ready)
+    document = json.loads(_manifest(tmp_path).read_text())
+    document["score_weights"] = "present"
+    planted = json.dumps(document, sort_keys=True).encode()
+    _manifest(tmp_path).unlink()
+    real = population._write
+
+    def restore(root: Path, session: date, plan: object) -> None:
+        _manifest(tmp_path).write_bytes(planted)
+        monkeypatch.setattr(population, "_write", real)
+        real(root, session, plan)
+
+    monkeypatch.setattr(population, "_write", restore)
+    with pytest.raises(EvaluationError, match="different payload"):
+        _populate(tmp_path, ready)
+    assert _manifest(tmp_path).read_bytes() == planted
 
 
 def test_a_nested_bar_directory_is_not_part_of_the_freeze(tmp_path: Path) -> None:

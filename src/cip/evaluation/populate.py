@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -31,6 +32,7 @@ from cip.history.bars import DailyBar
 from cip.recorders.observation import CollectionFailure, Observation
 
 TRANSFORMATION = "session-input/v1"
+_SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 _REGIME = ("btc_dominance", "stablecoin_supply")
 _CORRUPT_EXACT = frozenset(
     {"snapshot_lookahead", "snapshot_session_mismatch", "snapshot_repeats_symbol"}
@@ -177,6 +179,9 @@ def populate_session(
         raise EvaluationError("git sha is missing")
     plan = _plan(session, close, captures)
     readiness = _assess(session, as_of, plan, weights_present)
+    path = root / _manifest_path(session)
+    if path.is_file():
+        return _kept(session, plan, path, as_of, git_sha, weights_present)
     if "session_not_closed" in readiness.blocks or _corrupt(readiness.blocks):
         return PopulationResult(readiness, None)
     _write(root, session, plan)
@@ -259,6 +264,23 @@ def _assess_stored(
     )
 
 
+def _kept(
+    session: date,
+    plan: _Plan,
+    path: Path,
+    as_of: datetime,
+    git_sha: str,
+    weights_present: bool,
+) -> PopulationResult:
+    """Return the first freeze, or refuse before any new file is created."""
+    existing = _read_manifest(path)
+    built = _planned_manifest(session, as_of, git_sha, weights_present, plan)
+    if not _same_freeze(existing, built):
+        raise EvaluationError("finalized session already exists with a different payload")
+    readiness = _assess(session, existing.finalized_at, plan, existing.score_weights == "present")
+    return PopulationResult(readiness, existing)
+
+
 def _write(root: Path, session: date, plan: _Plan) -> None:
     if plan.snapshot is not None:
         write_universe(root, plan.snapshot)
@@ -279,8 +301,40 @@ def _seal(
     weights_present: bool,
     provenance: tuple[ProvenanceEntry, ...],
 ) -> SessionManifest:
-    universe, bars, candidates, regime = _hashes(root, session)
-    built = SessionManifest(
+    hashes = _hashes(root, session)
+    built = _manifest_of(session, as_of, git_sha, weights_present, provenance, hashes)
+    path = root / _manifest_path(session)
+    if path.is_file():
+        existing = _read_manifest(path)
+        if _same_freeze(existing, built):
+            return existing
+        raise EvaluationError("finalized session already exists with a different payload")
+    _create(path, _body(built))
+    return built
+
+
+def _planned_manifest(
+    session: date,
+    as_of: datetime,
+    git_sha: str,
+    weights_present: bool,
+    plan: _Plan,
+) -> SessionManifest:
+    return _manifest_of(
+        session, as_of, git_sha, weights_present, plan.provenance, _planned_hashes(plan)
+    )
+
+
+def _manifest_of(
+    session: date,
+    as_of: datetime,
+    git_sha: str,
+    weights_present: bool,
+    provenance: tuple[ProvenanceEntry, ...],
+    hashes: tuple[str, str, str, str],
+) -> SessionManifest:
+    universe, bars, candidates, regime = hashes
+    return SessionManifest(
         session_date=session,
         session_close_at=session_close(session),
         finalized_at=as_of,
@@ -293,14 +347,6 @@ def _seal(
         git_sha=git_sha,
         score_weights="present" if weights_present else "absent",
     )
-    path = root / _manifest_path(session)
-    if path.is_file():
-        existing = _read_manifest(path)
-        if _same_freeze(existing, built):
-            return existing
-        raise EvaluationError("finalized session already exists with a different payload")
-    _create(path, _body(built))
-    return built
 
 
 def _universe(
@@ -341,6 +387,7 @@ def _bars(
     for series in captures.bars:
         if series.symbol in found:
             raise EvaluationError("conflicting bar evidence")
+        _ticker(series.symbol)
         _clock(series.clock, close)
         for bar in series.bars:
             if bar.open_date > session:
@@ -362,8 +409,10 @@ def _bars(
     flags: dict[str, bool] = {}
     stored: list[AbsentInput] = []
     for item in captures.bar_absences:
-        if item.symbol in found or item.symbol in flags:
+        if item.symbol in found:
             raise EvaluationError("bar absence conflicts with stored bars")
+        if item.symbol in flags:
+            raise EvaluationError("conflicting absence evidence")
         _absence_clock(item)
         flags[item.symbol] = True
         provenance.append(
@@ -402,6 +451,8 @@ def _candidates(
         )
     for item in captures.candidate_absences:
         if item.symbol in found:
+            if found[item.symbol] is None:
+                raise EvaluationError("conflicting absence evidence")
             raise EvaluationError("candidate absence conflicts with a packet")
         _absence_clock(item)
         found[item.symbol] = None
@@ -425,13 +476,19 @@ def _regime(
     failures: list[str] = []
     for item in captures.regime:
         series = item.observation.series
+        # Funding and open interest are not session inputs, even when captured late.
         if series not in _REGIME:
             continue
-        _claim(seen, series)
         _value_time(item.captured_at, close, "captured_at")
         _value_time(item.observation.observed_at, close, "observed_at")
         _value_time(item.observation.source_timestamp, close, "source_timestamp")
+        observed = item.observation.observed_at.astimezone(UTC).date()
+        if observed < session:
+            continue
+        _claim(seen, series)
         observations.append(item.observation)
+        if observed > session:
+            continue
         provenance.append(
             _entry(
                 f"regime:{series}",
@@ -446,9 +503,11 @@ def _regime(
         series = failure.failure.series
         if series not in _REGIME:
             continue
-        _claim(seen, series)
         _value_time(failure.captured_at, close, "captured_at")
         _value_time(failure.failure.observed_at, close, "observed_at")
+        if failure.failure.observed_at.astimezone(UTC).date() != session:
+            continue
+        _claim(seen, series)
         failures.append(series)
         provenance.append(
             _entry(
@@ -462,6 +521,12 @@ def _regime(
         body = _failure_body(session, close, failure)
         documents[_failure_path(session, series).as_posix()] = body
     return tuple(observations), frozenset(failures)
+
+
+def _ticker(symbol: str) -> str:
+    if _SYMBOL.fullmatch(symbol) is None:
+        raise EvaluationError("symbol must be 1 to 20 uppercase letters or digits")
+    return symbol
 
 
 def _claim(seen: set[str], series: str) -> None:
@@ -673,6 +738,27 @@ def _load_observation(document: Mapping[str, object]) -> Observation:
         )
     except (KeyError, TypeError, ValueError) as error:
         raise EvaluationError("session input is unusable") from error
+
+
+def _planned_hashes(plan: _Plan) -> tuple[str, str, str, str]:
+    universe = _sha(b"" if plan.snapshot is None else _body(plan.snapshot))
+    bars: list[tuple[str, bytes]] = []
+    candidates: list[tuple[str, bytes]] = []
+    regime: list[tuple[str, bytes]] = []
+    for name, body in plan.documents.items():
+        filename = Path(name).name
+        if "bars" in Path(name).parts:
+            bars.append((f"bars/{filename}", body))
+        else:
+            regime.append((f"regime/{filename}", body))
+    for absence in plan.absences:
+        label = "bar-absence" if absence.input == "daily_bar" else "candidate-absence"
+        bucket = bars if absence.input == "daily_bar" else candidates
+        bucket.append((f"{label}/symbol={absence.symbol}.json", _body(absence)))
+    for symbol, candidate in plan.candidates.items():
+        if candidate is not None:
+            candidates.append((f"candidates/symbol={symbol}.json", _body(candidate)))
+    return (universe, _bundle(bars), _bundle(candidates), _bundle(regime))
 
 
 def _hashes(root: Path, session: date) -> tuple[str, str, str, str]:
