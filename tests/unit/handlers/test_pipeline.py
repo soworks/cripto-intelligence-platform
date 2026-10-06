@@ -172,10 +172,30 @@ def test_lambda_entry_points_wire_environment(lambda_env: Any) -> None:
 
     assert completed == {"correlation_id": "corr-env", "status": "COMPLETED"}
     assert failed == {"correlation_id": "corr-env", "status": "FAILED"}
-    events = LedgerRepository(lambda_env).list_by_correlation("corr-env")
+    ledger = LedgerRepository(lambda_env)
+    events = ledger.list_by_correlation("corr-env")
     assert [event.event_type for event in events] == [
         EventType.SCAN_STARTED,
         EventType.SCAN_COMPLETED,
         EventType.PIPELINE_FAILED,
     ]
     assert events[0].payload["kill_switch_active"] is True
+    assert ledger.list_by_correlation("prod-shadow") == []
+
+
+def test_a_prod_shadow_completion_records_the_clock_once(
+    lambda_env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CIP_ENV", "prod")
+    _put_flags(kill="false")
+    context = FakeLambdaContext()
+    started = pipeline.start_scan({"correlation_id": "corr-prod"}, context)
+
+    pipeline.complete_scan(started, context)
+    pipeline.complete_scan(started, context)
+
+    ledger = LedgerRepository(lambda_env)
+    [clock] = ledger.list_by_correlation("prod-shadow")
+    assert clock.event_type is EventType.PROD_SHADOW_STARTED
+    assert clock.payload["prod_shadow_started_at"] == clock.timestamp
+    assert clock.idempotency_key == "prod-shadow-clock"
