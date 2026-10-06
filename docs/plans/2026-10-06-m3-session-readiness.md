@@ -44,6 +44,8 @@ These plans are not this document, and they are not started until this contract 
 
 The session date is the daily bar's open date, the same date `run_daily_scan` already uses. The close is 00:00 UTC on the next day, the same instant `_close` already computes. A file may be written after the close. A value inside the file may not be from after the close.
 
+A daily bar has two timestamps. The bar period is `open_date`: the session bar's period ends at the close, and a bar whose `open_date` is after the session is lookahead. The retrieval timestamp is when CIP stored the completed bars. Retrieval of a series that contains the session bar may follow the close, because that bar does not exist until the period ends. Retrieval of history that does not contain the session bar may not. This distinction does not apply to the universe snapshot, a candidate packet, a market or fundamental stamp, or a regime observation: those retrievals and value times stay at or before the close. Sessions through 2026-10-05 stay blocked; a later retrieval is not used to reopen them.
+
 `InputPresence` is one of `present`, `absent`, `not_produced`, `lookahead`.
 
 - `present`: the object for this session exists, validates, and every value timestamp is at or before the close.

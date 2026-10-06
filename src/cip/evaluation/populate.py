@@ -1,6 +1,8 @@
-"""Turn pre-close captures into session inputs and freeze a ready session.
+"""Turn closed-session captures into session inputs and freeze a ready session.
 
-The daily scan is not called. A value captured after the close is not stored.
+The daily scan is not called. A universe, packet, or regime value retrieved
+after the close is not stored. A completed daily bar may be retrieved after
+the close, because its period ends at that instant. A later bar is not stored.
 """
 
 from __future__ import annotations
@@ -54,7 +56,12 @@ class _Strict(BaseModel):
 
 @dataclass(frozen=True)
 class CaptureClock:
-    """Where a stored value came from, and when it was captured."""
+    """Market time and the time CIP retrieved the value.
+
+    ``source_timestamp`` is the provider's period or observation time.
+    ``captured_at`` is when CIP stored the retrieval. For a completed daily bar,
+    retrieval may follow the session close. For every other input it may not.
+    """
 
     source: str
     source_timestamp: datetime | None
@@ -88,6 +95,14 @@ class AbsenceCapture:
 
 @dataclass(frozen=True)
 class BarCapture:
+    """One symbol's daily bars.
+
+    The bar period is ``open_date``. ``clock.source_timestamp`` is that period's
+    market time when the provider stamps one. ``clock.captured_at`` is the
+    retrieval. A series that contains the session bar may be retrieved after
+    the close. A bar from a later date is still lookahead.
+    """
+
     symbol: str
     bars: tuple[DailyBar, ...]
     clock: CaptureClock
@@ -388,10 +403,7 @@ def _bars(
         if series.symbol in found:
             raise EvaluationError("conflicting bar evidence")
         _ticker(series.symbol)
-        _clock(series.clock, close)
-        for bar in series.bars:
-            if bar.open_date > session:
-                raise EvaluationError("capture is after the close")
+        _bar_clock(session, close, series)
         ordered = tuple(sorted(series.bars, key=lambda bar: bar.open_date))
         found[series.symbol] = ordered
         provenance.append(
@@ -549,6 +561,31 @@ def _absent(
 
 def _corrupt(blocks: tuple[str, ...]) -> bool:
     return any(block in _CORRUPT_EXACT or block.startswith(_CORRUPT_PREFIX) for block in blocks)
+
+
+def _bar_clock(session: date, close: datetime, series: BarCapture) -> None:
+    """Accept a completed session bar retrieved after the close.
+
+    History that does not contain the session bar must still have been retrieved
+    at or before the close. The session bar's period ends at the close, so a
+    retrieval before that instant is not evidence of the completed bar.
+    """
+    if series.clock.source == "":
+        raise EvaluationError("source is required")
+    _require_utc(series.clock.captured_at, "captured_at")
+    _value_time(series.clock.source_timestamp, close, "source_timestamp")
+    includes_session = False
+    for bar in series.bars:
+        if bar.open_date > session:
+            raise EvaluationError("capture is after the close")
+        if bar.open_date == session:
+            includes_session = True
+    if includes_session:
+        if series.clock.captured_at < close:
+            raise EvaluationError("session bar was retrieved before it closed")
+        return
+    if series.clock.captured_at > close:
+        raise EvaluationError("capture is after the close")
 
 
 def _clock(clock: CaptureClock, close: datetime) -> None:

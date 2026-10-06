@@ -290,6 +290,47 @@ def test_a_bar_after_the_session_is_rejected(tmp_path: Path) -> None:
     assert list(tmp_path.rglob("*.json")) == []
 
 
+def test_a_completed_session_bar_retrieved_after_the_close_is_accepted(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    late = _clock(source="binance/klines", captured_at=LATER)
+    bars = tuple(
+        BarCapture(series.symbol, series.bars, late if series.symbol == "BTCUSDT" else series.clock)
+        for series in ready.bars
+    )
+    result = _populate(tmp_path, _swap_bars(ready, bars))
+    assert result.readiness.ready is True
+    assert result.manifest is not None
+    btc = next(entry for entry in result.manifest.provenance if entry.name == "bars:BTCUSDT")
+    assert btc.captured_at == LATER
+    assert btc.source_timestamp == CLOSE
+
+
+def test_a_session_bar_retrieved_before_the_close_is_rejected(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    early = _clock(source="binance/klines", captured_at=CLOSE - timedelta(seconds=1))
+    bars = (BarCapture("BTCUSDT", ready.bars[0].bars, early), *ready.bars[1:])
+    with pytest.raises(EvaluationError, match="session bar was retrieved before it closed"):
+        _populate(tmp_path, _swap_bars(ready, bars))
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_history_retrieved_after_the_close_is_rejected(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    prior = _bar("BTCUSDT", SESSION - timedelta(days=1))
+    bars = (BarCapture("BTCUSDT", (prior,), _clock(source="binance/klines", captured_at=LATER)),)
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        _populate(tmp_path, _swap_bars(ready, bars))
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_a_bar_retrieval_needs_a_source(tmp_path: Path) -> None:
+    ready = _ready(days=1)
+    bars = (BarCapture("BTCUSDT", ready.bars[0].bars, _clock(source="")), *ready.bars[1:])
+    with pytest.raises(EvaluationError, match="source is required"):
+        _populate(tmp_path, _swap_bars(ready, bars))
+    assert list(tmp_path.rglob("*.json")) == []
+
+
 def test_a_regime_source_after_the_close_is_rejected(tmp_path: Path) -> None:
     ready = _ready()
     regime = (
