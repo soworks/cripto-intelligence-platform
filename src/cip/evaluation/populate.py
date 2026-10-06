@@ -34,6 +34,7 @@ from cip.history.bars import DailyBar
 from cip.recorders.observation import CollectionFailure, Observation
 
 TRANSFORMATION = "session-input/v1"
+BLOCKED_THROUGH = date(2026, 10, 5)
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 _REGIME = ("btc_dominance", "stablecoin_supply")
 _CORRUPT_EXACT = frozenset(
@@ -569,6 +570,8 @@ def _bar_clock(session: date, close: datetime, series: BarCapture) -> None:
     History that does not contain the session bar must still have been retrieved
     at or before the close. The session bar's period ends at the close, so a
     retrieval before that instant is not evidence of the completed bar.
+    Sessions through 2026-10-05 keep the stricter rule: a retrieval after the
+    close is not evidence for that session.
     """
     if series.clock.source == "":
         raise EvaluationError("source is required")
@@ -580,7 +583,7 @@ def _bar_clock(session: date, close: datetime, series: BarCapture) -> None:
             raise EvaluationError("capture is after the close")
         if bar.open_date == session:
             includes_session = True
-    if includes_session:
+    if includes_session and session > BLOCKED_THROUGH:
         if series.clock.captured_at < close:
             raise EvaluationError("session bar was retrieved before it closed")
         return

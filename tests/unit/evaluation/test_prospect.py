@@ -140,6 +140,8 @@ def test_pre_close_history_excludes_the_session_bar() -> None:
     with pytest.raises(EvaluationError, match="session bar was retrieved before it closed"):
         history_capture(SESSION, "BTCUSDT", (prior, _bar("BTCUSDT", SESSION)), BEFORE)
     with pytest.raises(EvaluationError, match="capture is after the close"):
+        history_capture(SESSION, "BTCUSDT", (_bar("BTCUSDT", SESSION + timedelta(days=1)),), BEFORE)
+    with pytest.raises(EvaluationError, match="capture is after the close"):
         history_capture(SESSION, "BTCUSDT", (prior,), AFTER)
     with pytest.raises(EvaluationError, match="history is empty"):
         history_capture(SESSION, "BTCUSDT", (), BEFORE)
@@ -173,6 +175,9 @@ def test_a_candidate_absence_requires_a_lookup() -> None:
         candidate_absence(SESSION, "SOLUSDT", AFTER, "coingecko", looked=False)
     with pytest.raises(EvaluationError, match="source is required"):
         candidate_absence(SESSION, "SOLUSDT", AFTER, "", looked=True)
+    naive = datetime(2026, 10, 7, 0, 5)  # noqa: DTZ001
+    with pytest.raises(EvaluationError, match="produced_at must be timezone-aware UTC"):
+        candidate_absence(SESSION, "SOLUSDT", naive, "coingecko", looked=True)
     with pytest.raises(EvaluationError, match="historical session stays blocked"):
         candidate_absence(date(2026, 10, 4), "SOLUSDT", AFTER, "coingecko", looked=True)
 
@@ -188,7 +193,20 @@ def _history() -> BarCapture:
 
 def _completed() -> BarCapture:
     prior = _bar("BTCUSDT", SESSION - timedelta(days=1))
-    return session_bar_capture(SESSION, "BTCUSDT", (prior, _bar("BTCUSDT", SESSION)), AFTER)
+    stale = DailyBar(
+        symbol=prior.symbol,
+        open_date=prior.open_date,
+        open=prior.open,
+        high=prior.high,
+        low=prior.low,
+        close=Decimal("99"),
+        volume=prior.volume,
+        quote_volume=prior.quote_volume,
+        trade_count=prior.trade_count,
+        taker_buy_base_volume=prior.taker_buy_base_volume,
+        taker_buy_quote_volume=prior.taker_buy_quote_volume,
+    )
+    return session_bar_capture(SESSION, "BTCUSDT", (stale, _bar("BTCUSDT", SESSION)), AFTER)
 
 
 def _facts(symbol: str = "BTCUSDT") -> CandidateFacts:
@@ -274,6 +292,10 @@ def _regime(series: str = "btc_dominance", observed_at: datetime = BEFORE) -> Re
 def test_pre_close_captures_round_trip_without_the_session_bar(tmp_path: Path) -> None:
     store_universe(tmp_path, SESSION, _universe())
     store_history(tmp_path, SESSION, _history())
+    eth = history_capture(
+        SESSION, "ETHUSDT", (_bar("ETHUSDT", SESSION - timedelta(days=1)),), BEFORE
+    )
+    store_history(tmp_path, SESSION, eth)
     store_packet(tmp_path, SESSION, _packet())
     store_packet(tmp_path, SESSION, _packet("ADAUSDT", cap=Decimal("1"), stamp=BEFORE))
     absence = candidate_absence(SESSION, "SOLUSDT", BEFORE, "coingecko", looked=True)
@@ -286,15 +308,19 @@ def test_pre_close_captures_round_trip_without_the_session_bar(tmp_path: Path) -
     pre_close = load_pre_close(tmp_path, SESSION)
     assert pre_close.universe is not None
     assert pre_close.universe.symbols == ("BTCUSDT", "SOLUSDT")
-    assert [series.symbol for series in pre_close.bars] == ["BTCUSDT"]
+    assert [series.symbol for series in pre_close.bars] == ["BTCUSDT", "ETHUSDT"]
     assert pre_close.bars[0].bars[0].open_date == SESSION - timedelta(days=1)
     assert [packet.symbol for packet in pre_close.packets] == ["ADAUSDT", "BTCUSDT"]
     assert pre_close.candidate_absences[0].symbol == "SOLUSDT"
     assert pre_close.bar_absences[0].symbol == "ETHUSDT"
     assert pre_close.regime[0].observation.series == "btc_dominance"
     closed = load_closed(tmp_path, SESSION)
-    assert closed.bars[0].bars[-1].open_date == SESSION
-    assert closed.bars[0].clock.captured_at == AFTER
+    btc = next(series for series in closed.bars if series.symbol == "BTCUSDT")
+    eth_bars = next(series for series in closed.bars if series.symbol == "ETHUSDT")
+    assert [bar.open_date for bar in btc.bars] == [SESSION - timedelta(days=1), SESSION]
+    assert btc.bars[0].close == Decimal("10")
+    assert btc.clock.captured_at == AFTER
+    assert [bar.open_date for bar in eth_bars.bars] == [SESSION - timedelta(days=1)]
     store_universe(tmp_path, SESSION, _universe())
     assert load_pre_close(tmp_path, SESSION).universe == pre_close.universe
 
@@ -374,6 +400,17 @@ def test_rejected_bar_clocks_store_nothing(tmp_path: Path) -> None:
 def test_a_packet_with_an_undated_cap_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(EvaluationError, match="undated fundamental"):
         store_packet(tmp_path, SESSION, _packet(cap=Decimal("1")))
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        store_packet(tmp_path, SESSION, _packet(stamp=AFTER))
+    store_packet(tmp_path, SESSION, _packet(cap=Decimal("1"), stamp=BEFORE))
+    path = tmp_path / "captures" / "session=2026-10-06" / "candidates" / "symbol=BTCUSDT.json"
+    document = json.loads(path.read_text())
+    document["candidate"]["cmc"]["market_cap_usd"] = "1"
+    document["candidate"]["cmc"]["source_timestamp"] = "2026-10-07T00:00:01Z"
+    path.write_text(json.dumps(document))
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        load_pre_close(tmp_path, SESSION)
+    path.unlink()
     late = _packet()
     moved = PacketCapture(
         late.symbol, late.candidate, CaptureClock("binance/ticker", AFTER, BEFORE)

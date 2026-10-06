@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from cip.adapters.market import ExchangeInfo
 from cip.domain.errors import EvaluationError, RecorderError
 from cip.evaluation.populate import (
+    BLOCKED_THROUGH,
     AbsenceCapture,
     BarCapture,
     CaptureClock,
@@ -32,7 +33,6 @@ from cip.evaluation.session import session_close
 from cip.history.bars import DailyBar
 from cip.recorders.observation import Observation
 
-BLOCKED_THROUGH = date(2026, 10, 5)
 _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 
 
@@ -94,7 +94,9 @@ def history_capture(
         raise EvaluationError("capture is after the close")
     if not bars:
         raise EvaluationError("history is empty")
-    if any(bar.open_date >= session for bar in bars):
+    if any(bar.open_date > session for bar in bars):
+        raise EvaluationError("capture is after the close")
+    if any(bar.open_date == session for bar in bars):
         raise EvaluationError("session bar was retrieved before it closed")
     period_end = session_close(max(bar.open_date for bar in bars))
     if retrieved_at < period_end:
@@ -135,6 +137,7 @@ def candidate_absence(
         raise EvaluationError("candidate absence requires a lookup")
     if source == "":
         raise EvaluationError("source is required")
+    _aware(produced_at, "produced_at")
     return AbsenceCapture(symbol, produced_at, source)
 
 
@@ -173,6 +176,11 @@ def store_completed_bars(root: Path, session: date, capture: BarCapture) -> None
 
 def store_packet(root: Path, session: date, capture: PacketCapture) -> None:
     """Store one looked-up candidate. A missing fundamental stays missing."""
+    _checked_packet(session, capture)
+    _create(_packet_path(root, session, capture.symbol), _packet_body(session, capture))
+
+
+def _checked_packet(session: date, capture: PacketCapture) -> None:
     prospective_session(session)
     close = session_close(session)
     _ticker(capture.symbol)
@@ -183,11 +191,12 @@ def store_packet(root: Path, session: date, capture: PacketCapture) -> None:
     _before_close(capture.candidate.market.as_of, close, "market clock")
     gecko = capture.candidate.coingecko
     cmc = capture.candidate.cmc
+    _value(gecko.source_timestamp, close)
+    _value(cmc.source_timestamp, close)
     _dated_cap(gecko.market_cap_usd, gecko.source_timestamp)
     _dated_cap(cmc.market_cap_usd, cmc.source_timestamp)
     if capture.clock.source == "":
         raise EvaluationError("source is required")
-    _create(_packet_path(root, session, capture.symbol), _packet_body(session, capture))
 
 
 def store_absence(
@@ -265,14 +274,36 @@ def _dated_cap(cap: Decimal | None, stamp: datetime | None) -> None:
         raise EvaluationError("undated fundamental")
 
 
+def _closed_bars(
+    session: date,
+    history: dict[str, BarCapture],
+    final: dict[str, BarCapture],
+) -> tuple[BarCapture, ...]:
+    """Keep pre-close history and append the completed session bar."""
+    symbols = [*history, *(symbol for symbol in final if symbol not in history)]
+    merged: list[BarCapture] = []
+    for symbol in symbols:
+        prior = history.get(symbol)
+        completed = final.get(symbol)
+        if prior is None:
+            merged.append(final[symbol])
+            continue
+        if completed is None:
+            merged.append(prior)
+            continue
+        added = tuple(bar for bar in completed.bars if bar.open_date == session)
+        bars = tuple(sorted((*prior.bars, *added), key=lambda bar: bar.open_date))
+        merged.append(session_bar_capture(session, symbol, bars, completed.clock.captured_at))
+    return tuple(merged)
+
+
 def _load(root: Path, session: date, *, include_final: bool) -> SessionCaptures:
     universe = _load_universe(root, session)
     history = _load_bars(root, session, _history_dir(root, session), completed=False)
     final: dict[str, BarCapture] = {}
     if include_final:
         final = _load_bars(root, session, _final_dir(root, session), completed=True)
-    bars = tuple(final.get(symbol, series) for symbol, series in history.items())
-    bars += tuple(series for symbol, series in final.items() if symbol not in history)
+    bars = _closed_bars(session, history, final) if include_final else tuple(history.values())
     packets = _load_packets(root, session)
     candidate_absences, bar_absences = _load_absences(root, session)
     regime = _load_regime(root, session)
@@ -380,6 +411,7 @@ def _load_packets(root: Path, session: date) -> tuple[PacketCapture, ...]:
         capture = PacketCapture(symbol, candidate, clock)
         if candidate.facts.symbol != symbol:
             raise EvaluationError("capture is unusable")
+        _checked_packet(session, capture)
         found.append(capture)
     return tuple(found)
 
