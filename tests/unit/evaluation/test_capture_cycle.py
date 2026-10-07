@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import cip.evaluation.capture_cycle as cycle_module
 from cip.adapters.market import ExchangeInfo
 from cip.domain.errors import EvaluationError
 from cip.evaluation.capture_cycle import (
@@ -644,9 +645,7 @@ def test_a_stored_bar_file_must_still_parse(tmp_path: Path) -> None:
     assert source.calls == []
     assert report.skipped == ("finalized:2026-10-07",)
     assert report.finalized is False
-    text = Path(
-        "/Users/albertosolano/Projects/cip-session-plan/src/cip/evaluation/capture_cycle.py"
-    ).read_text()
+    text = Path(cycle_module.__file__).read_text()
     assert "run_daily_scan" not in text
     assert "prod_decisions_started_at" not in text
     assert "score_v2_shadow_started_at" not in text
