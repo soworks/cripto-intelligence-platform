@@ -141,6 +141,13 @@ def test_peg_hours_count_only_closed_hours_beyond_the_policy_band() -> None:
     ]
     during = datetime(2026, 10, 7, 13, 30, tzinfo=UTC)
     assert closed_hour_closes(payload, captured_at=during) == (Decimal("1.010"),)
+    finished = datetime(2026, 10, 7, 16, tzinfo=UTC)
+    third = [opened + 2 * hour, "1", "1", "1", "1.000", "1", opened + 3 * hour - 1, "1", 1]
+    assert closed_hour_closes([*payload, third], captured_at=finished) == (
+        Decimal("1.010"),
+        Decimal("1.020"),
+        Decimal("1.000"),
+    )
 
 
 def test_malformed_observations_stay_unusable(tmp_path: Path) -> None:
@@ -172,6 +179,10 @@ def test_malformed_observations_stay_unusable(tmp_path: Path) -> None:
     row = [opened, "10", "11", "9", "10", "1", opened + 86_400_000 - 1, "100", 2, "1", "4", "0"]
     parsed = parse_daily_klines([row], symbol="BTCUSDT")
     assert parsed[0].taker_buy_quote_volume == Decimal("4")
+    negative = row.copy()
+    negative[10] = "-1"
+    with pytest.raises(EvaluationError, match="unusable"):
+        parse_daily_klines([negative], symbol="BTCUSDT")
     with pytest.raises(EvaluationError, match="unusable"):
         parse_daily_klines([row], symbol="btc")
     with pytest.raises(EvaluationError, match="unusable"):
@@ -231,6 +242,117 @@ def test_malformed_observations_stay_unusable(tmp_path: Path) -> None:
     for item in refused:
         with pytest.raises(EvaluationError):
             store_liquidity(tmp_path, SESSION, item)
+
+
+def test_a_partial_candle_an_undated_input_and_a_peg_without_closes_are_refused(
+    tmp_path: Path,
+) -> None:
+    opened = int(datetime(2026, 10, 6, tzinfo=UTC).timestamp() * 1000)
+    day = 86_400_000
+    hour = 3_600_000
+    row = [opened, "10", "11", "9", "10", "1", opened + day - 1, "100", 2, "1", "4", "0"]
+    partial = row.copy()
+    partial[6] = opened + hour - 1
+    with pytest.raises(EvaluationError, match="unusable"):
+        parse_daily_klines([partial], symbol="BTCUSDT")
+    shifted = row.copy()
+    shifted[0] = opened + 1
+    shifted[6] = opened + day
+    with pytest.raises(EvaluationError, match="unusable"):
+        parse_daily_klines([shifted], symbol="BTCUSDT")
+    start = int(datetime(2026, 10, 7, 10, tzinfo=UTC).timestamp() * 1000)
+    wide = [start, "1", "1", "1", "1", "1", start + 2 * hour - 1, "1", 1]
+    with pytest.raises(EvaluationError, match="unusable"):
+        closed_hour_closes([wide], captured_at=WHEN)
+    first = [start, "1", "1", "1", "1.01", "1", start + hour - 1, "1", 1]
+    later = [start + 2 * hour, "1", "1", "1", "1.02", "1", start + 3 * hour - 1, "1", 1]
+    with pytest.raises(EvaluationError, match="unusable"):
+        closed_hour_closes([first, later], captured_at=WHEN)
+    text_open = ["1", "1", "1", "1", "1", "1", start + hour - 1]
+    with pytest.raises(EvaluationError, match="unusable"):
+        closed_hour_closes([text_open], captured_at=WHEN)
+    huge = 8_640_000_000_000_000
+    with pytest.raises(EvaluationError, match="unusable"):
+        closed_hour_closes(
+            [[huge, "1", "1", "1", "1", "1", huge + hour - 1, "1", 1]],
+            captured_at=WHEN,
+        )
+    with pytest.raises(EvaluationError, match="session bar was retrieved before it closed"):
+        store_liquidity(tmp_path, SESSION, _capture(bars=(*_series(31), _bar(SESSION, "9"))))
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        store_liquidity(tmp_path, SESSION, _capture(bars=(_bar(date(2026, 10, 8), "9"),)))
+    early = datetime(2026, 10, 6, 23, tzinfo=UTC)
+    with pytest.raises(EvaluationError, match="bar was retrieved before it closed"):
+        store_liquidity(tmp_path, SESSION, _capture(bar_captured_at=early))
+    after = datetime(2026, 10, 8, 0, 0, 1, tzinfo=UTC)
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        store_liquidity(tmp_path, SESSION, _capture(book_observed_at=after))
+    for undated in (
+        {"book_observed_at": None},
+        {"ticker_captured_at": None},
+        {"market_source_timestamp": None},
+        {"peg_captured_at": None},
+    ):
+        with pytest.raises(EvaluationError, match="undated observation"):
+            store_liquidity(tmp_path, SESSION, _capture(**undated))
+    with pytest.raises(EvaluationError, match="unusable"):
+        store_liquidity(tmp_path, SESSION, _capture(hourly_closes=(), peg_limit=None))
+    with pytest.raises(EvaluationError, match="unusable"):
+        store_liquidity(tmp_path, SESSION, _capture(peg_limit=Decimal("-1")))
+    with pytest.raises(EvaluationError, match="unusable"):
+        store_liquidity(
+            tmp_path,
+            SESSION,
+            _capture(
+                stablecoin_peg_deviation=None,
+                peg_deviation_hours=None,
+                hourly_closes=(Decimal("1.001"),),
+            ),
+        )
+    with pytest.raises(EvaluationError, match="does not match"):
+        store_liquidity(
+            tmp_path,
+            SESSION,
+            _capture(stablecoin_peg_deviation=Decimal("0.5"), peg_deviation_hours=4),
+        )
+    store_liquidity(
+        tmp_path,
+        SESSION,
+        _capture(
+            symbol="SOLUSDT",
+            bars=(),
+            median_quote_volume_30d_usd=None,
+            day_quote_volume_usd=None,
+            volume_zscore=None,
+            price_move=None,
+            trade_size_stdev=None,
+        ),
+    )
+    store_liquidity(
+        tmp_path,
+        SESSION,
+        _capture(
+            symbol="ADAUSDT",
+            spread_bps=(),
+            median_spread_bps=None,
+            spread_snapshots=None,
+            bid_usd=None,
+            ask_usd=None,
+            depth_usd_per_side=None,
+        ),
+    )
+    store_liquidity(
+        tmp_path,
+        SESSION,
+        _capture(
+            symbol="XRPUSDT",
+            stablecoin_peg_deviation=None,
+            peg_deviation_hours=None,
+            hourly_closes=(),
+            peg_limit=None,
+            peg_captured_at=None,
+        ),
+    )
 
 
 def test_a_capture_that_appears_during_the_write_is_kept_or_refused(
@@ -341,6 +463,8 @@ def _capture(**overrides: object) -> object:
         "binance_volume_share": derived.binance_volume_share,
         "stablecoin_peg_deviation": Decimal("0.001"),
         "peg_deviation_hours": 0,
+        "hourly_closes": (Decimal("1.001"),),
+        "peg_limit": Decimal("0.005"),
         "bar_captured_at": WHEN,
         "book_observed_at": WHEN,
         "ticker_captured_at": WHEN,
