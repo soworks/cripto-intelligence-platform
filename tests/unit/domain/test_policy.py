@@ -67,6 +67,18 @@ def test_repository_policy_records_owner_decisions() -> None:
         policy.risk.max_daily_trade_usd,
         policy.risk.max_monthly_trade_usd,
     ) == (75, 150, 750)
+    manipulation = policy.hypotheses.universe.manipulation
+    assert (manipulation.spike_candle_floor, manipulation.spike_candle_ceiling) == (0, 3)
+    formula = manipulation.spike_count
+    assert (formula.baseline_days, formula.minimum_daily_bars, formula.exact_hours) == (30, 31, 24)
+    assert (formula.event_interval, formula.concentration_interval) == ("1d", "1h")
+    assert formula.zscore_threshold == "volume_zscore_above"
+    assert manipulation.volume_zscore_above == 4
+    assert formula.variance == "sample_n_minus_1"
+    assert formula.material_hour == "daily_mean_over_exact_hours"
+    assert formula.comparisons == "strict_greater_than"
+    assert formula.zero_variance == "missing"
+    assert (formula.hourly_daily_volume, formula.mismatch) == ("exact_equal", "integrity_failure")
 
 
 def test_version_is_sha256_of_file_bytes() -> None:
@@ -417,6 +429,19 @@ def test_a_schema_v2_file_without_hypotheses_is_rejected(
         (("hypotheses", "universe", "exclusions", "stablecoin_symbols"), ["FDUSD", "FDUSD"]),
         (("hypotheses", "universe", "high_risk", "minimum_market_cap_usd"), 400_000_000),
         (("hypotheses", "universe", "manipulation", "binance_volume_share_below"), 0.95),
+        (("hypotheses", "universe", "manipulation", "spike_candle_floor"), -1),
+        (("hypotheses", "universe", "manipulation", "spike_candle_floor"), 2),
+        (("hypotheses", "universe", "manipulation", "spike_candle_ceiling"), 1),
+        (("hypotheses", "universe", "manipulation", "spike_count", "baseline_days"), 29),
+        (("hypotheses", "universe", "manipulation", "spike_count", "exact_hours"), 23),
+        (("hypotheses", "universe", "manipulation", "spike_count", "variance"), "population"),
+        (("hypotheses", "universe", "manipulation", "spike_count", "zero_variance"), "zero"),
+        (("hypotheses", "universe", "manipulation", "spike_count", "mismatch"), "ignore"),
+        (("hypotheses", "universe", "manipulation", "spike_count", "zscore_threshold"), "other"),
+        (
+            ("hypotheses", "universe", "manipulation", "spike_count", "comparisons"),
+            "greater_or_equal",
+        ),
         (("hypotheses", "universe", "new_listing", "normal_lane_days"), 90),
         (
             ("hypotheses", "fundamentals", "block_if_missing"),

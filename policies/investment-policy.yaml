@@ -120,7 +120,22 @@ hypotheses:
       turnover_above: 0.50
       volume_zscore_above: 4
       price_move_below: 0.02
+      # Flag only when spike_candle_floor < spike_candle_count < spike_candle_ceiling.
+      spike_candle_floor: 0
       spike_candle_ceiling: 3
+      spike_count:
+        baseline_days: 30
+        minimum_daily_bars: 31
+        event_interval: 1d
+        concentration_interval: 1h
+        exact_hours: 24
+        zscore_threshold: volume_zscore_above
+        variance: sample_n_minus_1
+        material_hour: daily_mean_over_exact_hours
+        comparisons: strict_greater_than
+        zero_variance: missing
+        hourly_daily_volume: exact_equal
+        mismatch: integrity_failure
       trade_size_stdev_above: 3
       taker_buy_ratio_above: 0.70
       escalation_block_days: 7

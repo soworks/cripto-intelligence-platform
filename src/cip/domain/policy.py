@@ -316,11 +316,30 @@ class ExclusionHypotheses(_Strict):
         return self
 
 
+class SpikeCandleFormula(_Strict):
+    """Parameters that reproduce spike_candle_count. The z-score value lives on the parent."""
+
+    baseline_days: int = Field(ge=1)
+    minimum_daily_bars: int = Field(ge=2)
+    event_interval: Literal["1d"]
+    concentration_interval: Literal["1h"]
+    exact_hours: int = Field(ge=1)
+    zscore_threshold: Literal["volume_zscore_above"]
+    variance: Literal["sample_n_minus_1"]
+    material_hour: Literal["daily_mean_over_exact_hours"]
+    comparisons: Literal["strict_greater_than"]
+    zero_variance: Literal["missing"]
+    hourly_daily_volume: Literal["exact_equal"]
+    mismatch: Literal["integrity_failure"]
+
+
 class ManipulationHypotheses(_Strict):
     turnover_above: Fraction
     volume_zscore_above: PositiveNumber
     price_move_below: Fraction
+    spike_candle_floor: int = Field(ge=0)
     spike_candle_ceiling: int = Field(ge=1)
+    spike_count: SpikeCandleFormula
     trade_size_stdev_above: PositiveNumber
     taker_buy_ratio_above: Fraction
     escalation_block_days: int = Field(ge=1)
@@ -333,6 +352,13 @@ class ManipulationHypotheses(_Strict):
     def _share_band(self) -> Self:
         if self.binance_volume_share_below >= self.binance_volume_share_above:
             raise ValueError("binance volume-share band is empty")
+        if self.spike_candle_ceiling - self.spike_candle_floor < 2:
+            raise ValueError("spike candle band is empty")
+        formula = self.spike_count
+        if formula.minimum_daily_bars != formula.baseline_days + 1:
+            raise ValueError("spike baseline does not match the daily sample")
+        if formula.exact_hours != 24:
+            raise ValueError("spike hour grid must cover the UTC day")
         return self
 
 
