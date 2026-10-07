@@ -145,7 +145,7 @@ module "session_capture_schedule" {
     (local.capture_name) = {
       group_name          = "default"
       schedule_expression = "rate(1 hour)"
-      state               = var.capture_schedule_enabled ? "ENABLED" : "DISABLED"
+      state               = var.capture_schedule_enabled
       arn                 = module.session_capture_lambda[0].lambda_function_arn
       role_arn            = module.session_capture_scheduler_role[0].arn
       input               = jsonencode({ trigger = "schedule" })

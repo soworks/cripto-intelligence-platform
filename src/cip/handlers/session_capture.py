@@ -100,7 +100,11 @@ class EvidenceSource:
             raise
         except ExchangeBannedError:
             raise
-        except (MarketDataError, RecorderError, httpx.HTTPError) as error:
+        except RecorderError as error:
+            if str(error) == "status 418":
+                raise ExchangeBannedError("Binance returned 418; the scan must stop") from error
+            raise TemporaryFailure(str(error)) from error
+        except (MarketDataError, httpx.HTTPError) as error:
             raise TemporaryFailure(str(error)) from error
 
     def _read(self, session: date, kind: str, symbol: str | None) -> object:
