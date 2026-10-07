@@ -190,6 +190,26 @@ def test_normal_liquidity_failures_keep_the_lane() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("count", "reasons"),
+    [
+        (None, ("missing_spike_candle_count",)),
+        (0, ("normal_lane",)),
+        (1, ("spike_candles",)),
+        (2, ("spike_candles",)),
+        (3, ("normal_lane",)),
+        (4, ("normal_lane",)),
+    ],
+)
+def test_spike_count_flags_only_a_concentrated_event(
+    count: int | None, reasons: tuple[str, ...]
+) -> None:
+    rules = UNIVERSE.manipulation
+    assert (rules.spike_candle_floor, rules.spike_candle_ceiling) == (0, 3)
+    result = assess_market(_facts(), _market(spike_candle_count=count), UNIVERSE)
+    assert result.reason_codes == reasons
+
+
 def test_manipulation_heuristics_block_without_an_order() -> None:
     rules = UNIVERSE.manipulation
     wash = assess_market(

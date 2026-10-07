@@ -1,7 +1,7 @@
 """Point-in-time liquidity observations for one prospective session.
 
 This module does not call a provider and does not change liquidity thresholds.
-A short sample stays missing. The session bar and the spike count are not filled.
+A short sample stays missing. The session bar is not a taker ratio.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 
 from cip.adapters.market import Depth, parse_klines
 from cip.domain.errors import EvaluationError, MarketDataError, RecorderError
+from cip.domain.policy import ManipulationHypotheses, SpikeCandleFormula
 from cip.evaluation.features import _median
 from cip.evaluation.prospect import prospective_session
 from cip.evaluation.session import session_close
@@ -31,6 +32,15 @@ _VOLUME_DAYS = 30
 _BASELINE_DAYS = 30
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
+
+
+@dataclass(frozen=True)
+class HourQuote:
+    """One completed UTC hour. Quote volume is the Binance kline field at index 7."""
+
+    open_ms: int
+    close_ms: int
+    quote_volume: Decimal
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,7 @@ class LiquidityCapture:
     ticker_captured_at: datetime | None
     market_source_timestamp: datetime | None
     peg_captured_at: datetime | None
+    hour_quotes: tuple[HourQuote, ...] = ()
 
 
 def parse_daily_klines(payload: object, *, symbol: str) -> tuple[DailyBar, ...]:
@@ -173,6 +184,42 @@ def derive_liquidity(
     )
 
 
+def spike_candle_count(
+    days: Sequence[DailyBar],
+    hours: Sequence[HourQuote],
+    *,
+    session: date,
+    as_of: datetime,
+    formula: SpikeCandleFormula,
+    zscore_above: Decimal,
+) -> int | None:
+    """Count material hours of an abnormal day. A contradiction is not a missing count."""
+    if formula.minimum_daily_bars != formula.baseline_days + 1:
+        raise EvaluationError("capture is unusable")
+    event = _event_day(session, as_of)
+    if event is None:
+        return None
+    window = _ending(days, event, formula.baseline_days + 1)
+    if window is None:
+        return None
+    grid = _hour_grid(hours, event, formula.exact_hours)
+    if grid is None:
+        return None
+    baseline = [bar.quote_volume for bar in window[:-1]]
+    current = window[-1].quote_volume
+    _usable_quotes([*baseline, current])
+    if sum((hour.quote_volume for hour in grid), Decimal(0)) != current:
+        raise EvaluationError("spike evidence is inconsistent")
+    deviation = _sample_stdev(baseline)
+    if deviation is None:
+        return None
+    mean = sum(baseline, Decimal(0)) / Decimal(len(baseline))
+    if current - mean <= zscore_above * deviation:
+        return 0
+    pace = mean / Decimal(formula.exact_hours)
+    return sum(1 for hour in grid if hour.quote_volume > pace)
+
+
 def book_metrics(book: Depth, *, band: Decimal, observed_at: datetime) -> BookReading | None:
     """Spread and the thinner side of the ±2% book. An empty book is missing."""
     try:
@@ -232,14 +279,20 @@ def closed_hour_closes(payload: object, *, captured_at: datetime) -> tuple[Decim
     return tuple(closes)
 
 
-def store_liquidity(root: Path, session: date, item: LiquidityCapture) -> None:
+def store_liquidity(
+    root: Path,
+    session: date,
+    item: LiquidityCapture,
+    *,
+    manipulation: ManipulationHypotheses | None = None,
+) -> None:
     """Store one pre-close liquidity document. Derived inputs must match the raw bars."""
     prospective_session(session)
     if session == _SEALED:
         raise EvaluationError("sealed session stays sealed")
     if (root / "sessions" / f"date={session.isoformat()}" / "manifest.json").exists():
         raise EvaluationError("finalized session is sealed")
-    _checked(session, item)
+    _checked(session, item, manipulation)
     _create(_path(root, session, item.symbol), _body(session, item))
 
 
@@ -337,11 +390,69 @@ def _decimal(value: object) -> Decimal:
     return parsed
 
 
-def _checked(session: date, item: LiquidityCapture) -> None:
+def _event_day(session: date, as_of: datetime) -> date | None:
+    if as_of.tzinfo is None or as_of.utcoffset() != timedelta(0):
+        raise EvaluationError("captured_at must be timezone-aware UTC")
+    candidate = session if as_of >= session_close(session) else session - timedelta(days=1)
+    if as_of < session_close(candidate):
+        return None
+    return candidate
+
+
+def _ending(days: Sequence[DailyBar], event: date, count: int) -> tuple[DailyBar, ...] | None:
+    selected = [bar for bar in days if bar.open_date <= event]
+    if not selected:
+        return None
+    ordered = tuple(sorted(selected, key=lambda bar: bar.open_date))
+    dates = [bar.open_date for bar in ordered]
+    if len(dates) != len(set(dates)):
+        raise EvaluationError("capture is unusable")
+    if ordered[-1].open_date != event or len(ordered) < count:
+        return None
+    window = ordered[-count:]
+    expected = event
+    for bar in reversed(window):
+        if bar.open_date != expected:
+            return None
+        expected -= timedelta(days=1)
+    return window
+
+
+def _hour_grid(
+    hours: Sequence[HourQuote], event: date, exact_hours: int
+) -> tuple[HourQuote, ...] | None:
+    midnight = int(datetime(event.year, event.month, event.day, tzinfo=UTC).timestamp()) * 1000
+    expected = [midnight + offset * _HOUR_MS for offset in range(exact_hours)]
+    by_open: dict[int, HourQuote] = {}
+    for hour in hours:
+        if hour.open_ms % _HOUR_MS != 0 or hour.close_ms != hour.open_ms + _HOUR_MS - 1:
+            raise EvaluationError("capture is unusable")
+        if not hour.quote_volume.is_finite() or hour.quote_volume < 0:
+            raise EvaluationError("capture is unusable")
+        if hour.open_ms in by_open:
+            raise EvaluationError("capture is unusable")
+        by_open[hour.open_ms] = hour
+    chosen: list[HourQuote] = []
+    for open_ms in expected:
+        found = by_open.get(open_ms)
+        if found is None:
+            return None
+        chosen.append(found)
+    return tuple(chosen)
+
+
+def _usable_quotes(quotes: Sequence[Decimal]) -> None:
+    if any(not value.is_finite() or value < 0 for value in quotes):
+        raise EvaluationError("capture is unusable")
+
+
+def _checked(
+    session: date, item: LiquidityCapture, manipulation: ManipulationHypotheses | None
+) -> None:
     if _SYMBOL.fullmatch(item.symbol) is None:
         raise EvaluationError("capture is unusable")
-    if item.taker_buy_ratio is not None or item.spike_candle_count is not None:
-        raise EvaluationError("session bar and spike count stay missing")
+    if item.taker_buy_ratio is not None:
+        raise EvaluationError("session bar stays missing")
     close = session_close(session)
     _completed_days(session, item, close)
     _require_clock(_book_present(item), item.book_observed_at, close)
@@ -374,6 +485,28 @@ def _checked(session: date, item: LiquidityCapture) -> None:
         raise EvaluationError("capture does not match the raw observations")
     _spread_agrees(item)
     _peg_pair(item)
+    _spike_agrees(session, item, manipulation)
+
+
+def _spike_agrees(
+    session: date, item: LiquidityCapture, manipulation: ManipulationHypotheses | None
+) -> None:
+    if not item.hour_quotes:
+        if item.spike_candle_count is not None:
+            raise EvaluationError("capture does not match the raw observations")
+        return
+    if manipulation is None:
+        raise EvaluationError("capture is unusable")
+    expected = spike_candle_count(
+        item.bars,
+        item.hour_quotes,
+        session=session,
+        as_of=item.bar_captured_at,
+        formula=manipulation.spike_count,
+        zscore_above=Decimal(str(manipulation.volume_zscore_above)),
+    )
+    if item.spike_candle_count != expected:
+        raise EvaluationError("capture does not match the raw observations")
 
 
 def _spread_agrees(item: LiquidityCapture) -> None:
@@ -478,7 +611,8 @@ def _body(session: date, item: LiquidityCapture) -> bytes:
         "volume_zscore": _text(item.volume_zscore),
         "price_move": _text(item.price_move),
         "taker_buy_ratio": None,
-        "spike_candle_count": None,
+        "spike_candle_count": item.spike_candle_count,
+        "hour_quotes": [_hour(hour) for hour in item.hour_quotes],
         "trade_size_stdev": _text(item.trade_size_stdev),
         "binance_volume_share": _text(item.binance_volume_share),
         "stablecoin_peg_deviation": _text(item.stablecoin_peg_deviation),
@@ -492,6 +626,14 @@ def _body(session: date, item: LiquidityCapture) -> bytes:
         "peg_captured_at": _stamp(item.peg_captured_at),
     }
     return json.dumps(document, sort_keys=True).encode()
+
+
+def _hour(hour: HourQuote) -> dict[str, object]:
+    return {
+        "open_ms": hour.open_ms,
+        "close_ms": hour.close_ms,
+        "quote_volume": format(hour.quote_volume, "f"),
+    }
 
 
 def _bar(bar: DailyBar) -> dict[str, object]:

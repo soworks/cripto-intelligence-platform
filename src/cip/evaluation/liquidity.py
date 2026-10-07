@@ -194,7 +194,7 @@ def _manipulation(market: MarketSnapshot, universe: UniverseHypotheses) -> tuple
         reasons.append("missing_taker_buy_ratio")
     if market.spike_candle_count is None:
         reasons.append("missing_spike_candle_count")
-    elif market.spike_candle_count < rules.spike_candle_ceiling:
+    elif rules.spike_candle_floor < market.spike_candle_count < rules.spike_candle_ceiling:
         reasons.append("spike_candles")
     if market.trade_size_stdev is None:
         reasons.append("missing_trade_size_stdev")
