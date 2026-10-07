@@ -55,6 +55,8 @@ Post-close does not run for the live clock. A controlled clock of 2026-10-08T01:
 | Reconciling 31 daily bars and 24 exact hours | `daily_bars`, `hour_bars` | derived `spike_candle_count` 1 |
 | Same daily total with 24 hours that do not sum to it | `daily_bars`, `hour_bars` | 24 raw hours kept, derived count null, daily bars kept |
 | Daily bars unavailable | one failed `daily_bars` attempt | no file, no absence |
+| Fewer than 24 exact session-day hours | `hour_bars`, then the same call again on retry | no hour file, so the retry stays open |
+| 24 exact hours plus an hour outside that day | `hour_bars` | only the 24-hour grid is stored |
 | Retry after the reconciling capture | none | both bar files skipped |
 
 That controlled run did not finalize, because the candidate packet for the closed session was not part of the stage. Finalization runs only after the universe, ticker, peg, both regime series, and, for every universe symbol, the book, classification, completed bars, hourly bars, and candidate packet are already stored. A finalized manifest is not written again.
