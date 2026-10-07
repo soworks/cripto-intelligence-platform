@@ -280,7 +280,10 @@ def _trade_size(bar: DailyBar) -> Decimal | None:
 
 
 def _trade_distance(window: tuple[DailyBar, ...] | None) -> Decimal | None:
-    return _zscore(window, _trade_size)
+    distance = _zscore(window, _trade_size)
+    if distance is None:
+        return None
+    return abs(distance)
 
 
 def _move(window: tuple[DailyBar, ...] | None) -> Decimal | None:

@@ -74,6 +74,8 @@ The 67 rejections, as combinations:
 | 1 | `JUPUSDT`: the `ICPUSDT` set, plus Binance share |
 | 1 | `PEPEUSDT`: those three, plus `median_spread_above_maximum` |
 
+`trade_size_stdev` is the absolute distance from the 30-day baseline. Eighteen of the 67 finished the latest completed day below that baseline. None of those distances exceed 3, so they do not add `trade_size_outlier`. The two names that do are `DOGEUSDT` and `UNIUSDT`.
+
 The 11-symbol turnover and share combination is `ADAUSDT`, `BCHUSDT`, `BTCUSDT`, `DOTUSDT`, `ETHUSDT`, `LINKUSDT`, `LTCUSDT`, `SOLUSDT`, `TRXUSDT`, `XLMUSDT`, `XRPUSDT`. BTCUSDT's 30-day median quote volume is about `$1.20B` and its thinner-side depth is about `$798k`. Its turnover is about `0.0011` and its Binance share of the retained CoinGecko aggregate is about `0.046`. Both sit outside the existing bands. The thresholds were not changed.
 
 No symbol was rejected for a missing median, missing day volume, missing spread, missing depth, missing turnover, missing z-score, missing price move, missing trade-size distance, missing Binance share, or a missing peg. `wash_volume`, `taker_buy_vertical`, `spike_candles`, `manipulation_turnover`, `stablecoin_peg`, and `manipulation_block` did not occur.
