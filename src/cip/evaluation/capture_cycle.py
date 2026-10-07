@@ -1,0 +1,619 @@
+"""Accumulate one UTC session's evidence. The daily scan is not called.
+
+The session comes from the clock. A scheduled payload cannot name a future
+session. A temporary provider failure is left unstored while a retry remains
+possible. One stored book is the session's only spread snapshot.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Protocol
+
+from cip.domain.errors import EvaluationError
+from cip.domain.policy import load_policy
+from cip.evaluation.classification import SymbolClassification, store_classification
+from cip.evaluation.liquidity_capture import HourQuote, spike_candle_count
+from cip.evaluation.populate import (
+    BLOCKED_THROUGH,
+    RegimeCapture,
+    UniverseCapture,
+    populate_session,
+)
+from cip.evaluation.prospect import (
+    load_closed,
+    prospective_session,
+    session_bar_capture,
+    store_completed_bars,
+    store_regime,
+    store_universe,
+)
+from cip.evaluation.session import SessionReadiness, session_close
+from cip.history.bars import DailyBar
+
+_SEALED = date(2026, 10, 6)
+_POLICY = Path(__file__).resolve().parents[3] / "policies" / "investment-policy.yaml"
+_REGIME = ("btc_dominance", "stablecoin_supply")
+
+
+class TemporaryFailure(Exception):
+    """The provider did not answer. This is not evidence that the input is absent."""
+
+
+class CaptureSource(Protocol):
+    """One retrieval. The cycle decides whether it is allowed to ask."""
+
+    def fetch(self, session: date, kind: str, symbol: str | None) -> object: ...
+
+
+@dataclass(frozen=True)
+class CaptureCycle:
+    """The open session, and the previous session once it has closed."""
+
+    now: datetime
+    open_session: date
+    pre_close: date | None
+    post_close: date | None
+
+
+@dataclass(frozen=True)
+class BookShot:
+    """One order-book observation. A session stores one of these."""
+
+    spread_bps: Decimal
+    source_timestamp: datetime | None
+    captured_at: datetime
+    bids: tuple[tuple[Decimal, Decimal], ...] = ()
+    asks: tuple[tuple[Decimal, Decimal], ...] = ()
+
+
+@dataclass(frozen=True)
+class CycleReport:
+    cycle: CaptureCycle
+    calls: tuple[tuple[str, str | None], ...]
+    skipped: tuple[str, ...]
+    retries: tuple[str, ...]
+    spike_counts: tuple[tuple[str, int | None], ...]
+    readiness: SessionReadiness | None
+    finalized: bool
+
+
+def capture_cycle(now: datetime, requested: date | None = None) -> CaptureCycle:
+    """Name the sessions this clock may touch. A future date is refused."""
+    _utc(now, "as_of")
+    if requested is not None and type(requested) is not date:
+        raise EvaluationError("session is a date")
+    opened = now.astimezone(UTC).date()
+    pre = opened if _writable(opened) else None
+    previous = opened - timedelta(days=1)
+    post = previous if _writable(previous) and now >= session_close(previous) else None
+    if requested is not None:
+        if requested > opened:
+            raise EvaluationError("future session")
+        if requested == _SEALED:
+            raise EvaluationError("sealed session stays sealed")
+        if requested != pre and requested != post:
+            raise EvaluationError("session is not open")
+        pre = requested if requested == pre else None
+        post = requested if requested == post else None
+    return CaptureCycle(now, opened, pre, post)
+
+
+def book_is_stored(root: Path, session: date, symbol: str) -> bool:
+    """True when this session already holds one spread snapshot for the symbol."""
+    if _book_path(root, session, symbol).is_file():
+        return True
+    path = _liquidity_path(root, session, symbol)
+    if not path.is_file():
+        return False
+    document = json.loads(path.read_text())
+    if not isinstance(document, dict):
+        return False
+    snapshots = document.get("spread_snapshots")
+    spreads = document.get("spread_bps")
+    if isinstance(snapshots, int) and not isinstance(snapshots, bool) and snapshots >= 1:
+        return True
+    return isinstance(spreads, list) and len(spreads) >= 1
+
+
+def store_session_book(root: Path, session: date, symbol: str, book: BookShot) -> None:
+    """Store one pre-close book. A different second book is a conflict."""
+    _belongs(session, book.captured_at)
+    prospective_session(session)
+    if session == _SEALED:
+        raise EvaluationError("sealed session stays sealed")
+    close = session_close(session)
+    _utc(book.captured_at, "captured_at")
+    if book.captured_at > close:
+        raise EvaluationError("capture is after the close")
+    if book.source_timestamp is not None:
+        _utc(book.source_timestamp, "source_timestamp")
+        if book.source_timestamp > close:
+            raise EvaluationError("capture is after the close")
+    if book_is_stored(root, session, symbol) and not _book_path(root, session, symbol).is_file():
+        raise EvaluationError("conflicting observation")
+    _create(_book_path(root, session, symbol), _book_body(session, symbol, book))
+
+
+def run_capture_cycle(
+    root: Path,
+    now: datetime,
+    source: CaptureSource,
+    symbols: tuple[str, ...],
+    *,
+    requested: date | None = None,
+    git_sha: str = "0" * 40,
+) -> CycleReport:
+    """Capture the open session, then the session that just closed."""
+    cycle = capture_cycle(now, requested)
+    calls: list[tuple[str, str | None]] = []
+    skipped: list[str] = []
+    retries: list[str] = []
+    spikes: list[tuple[str, int | None]] = []
+    if cycle.pre_close is not None and _manifest(root, cycle.pre_close).is_file():
+        skipped.append(f"finalized:{cycle.pre_close.isoformat()}")
+    elif cycle.pre_close is not None:
+        _pre_close(root, cycle.pre_close, source, symbols, calls, skipped, retries)
+    if cycle.post_close is not None and _manifest(root, cycle.post_close).is_file():
+        skipped.append(f"finalized:{cycle.post_close.isoformat()}")
+    elif cycle.post_close is not None:
+        _post_close(root, cycle, source, symbols, calls, skipped, retries, spikes)
+    readiness, finalized = _finalize(root, cycle, git_sha)
+    return CycleReport(
+        cycle,
+        tuple(calls),
+        tuple(skipped),
+        tuple(retries),
+        tuple(spikes),
+        readiness,
+        finalized,
+    )
+
+
+def _writable(session: date) -> bool:
+    return session > BLOCKED_THROUGH and session != _SEALED
+
+
+def _belongs(session: date, captured_at: datetime) -> None:
+    _utc(captured_at, "captured_at")
+    if session > captured_at.astimezone(UTC).date():
+        raise EvaluationError("future session")
+
+
+def _pre_close(
+    root: Path,
+    session: date,
+    source: CaptureSource,
+    symbols: tuple[str, ...],
+    calls: list[tuple[str, str | None]],
+    skipped: list[str],
+    retries: list[str],
+) -> None:
+    _one(root, session, source, "universe", None, calls, skipped, retries, _keep_universe)
+    _one(root, session, source, "ticker", None, calls, skipped, retries, _keep_ticker)
+    _one(root, session, source, "peg", "USDCUSDT", calls, skipped, retries, _keep_peg)
+    for series in _REGIME:
+        _one(root, session, source, "regime", series, calls, skipped, retries, _keep_regime)
+    for symbol in symbols:
+        _one(
+            root,
+            session,
+            source,
+            "classification",
+            symbol,
+            calls,
+            skipped,
+            retries,
+            _keep_classification,
+        )
+        if book_is_stored(root, session, symbol):
+            skipped.append(f"book:{symbol}")
+            continue
+        try:
+            payload = source.fetch(session, "book", symbol)
+        except TemporaryFailure:
+            retries.append(f"book:{symbol}")
+            continue
+        calls.append(("book", symbol))
+        if not isinstance(payload, BookShot):
+            raise EvaluationError("capture is unusable")
+        store_session_book(root, session, symbol, payload)
+
+
+def _post_close(
+    root: Path,
+    cycle: CaptureCycle,
+    source: CaptureSource,
+    symbols: tuple[str, ...],
+    calls: list[tuple[str, str | None]],
+    skipped: list[str],
+    retries: list[str],
+    spikes: list[tuple[str, int | None]],
+) -> None:
+    session = cycle.post_close
+    if session is None:
+        return
+    ordered: list[str] = []
+    for symbol in (*symbols, "BTCUSDT"):
+        if symbol not in ordered:
+            ordered.append(symbol)
+    for symbol in ordered:
+        _one_bar(root, cycle, source, symbol, calls, skipped, retries, spikes)
+
+
+def _one_bar(
+    root: Path,
+    cycle: CaptureCycle,
+    source: CaptureSource,
+    symbol: str,
+    calls: list[tuple[str, str | None]],
+    skipped: list[str],
+    retries: list[str],
+    spikes: list[tuple[str, int | None]],
+) -> None:
+    session = cycle.post_close
+    if session is None:
+        return
+    final = _final_path(root, session, symbol)
+    hours_path = _hours_path(root, session, symbol)
+    if final.is_file():
+        skipped.append(f"daily_bars:{symbol}")
+        bars = _bars_of(final)
+    else:
+        try:
+            payload = source.fetch(session, "daily_bars", symbol)
+        except TemporaryFailure:
+            retries.append(f"daily_bars:{symbol}")
+            return
+        calls.append(("daily_bars", symbol))
+        if not isinstance(payload, tuple) or any(not isinstance(bar, DailyBar) for bar in payload):
+            raise EvaluationError("capture is unusable")
+        bars = tuple(bar for bar in payload if isinstance(bar, DailyBar))
+        capture = session_bar_capture(session, symbol, bars, cycle.now)
+        store_completed_bars(root, session, capture)
+    if hours_path.is_file():
+        skipped.append(f"hour_bars:{symbol}")
+        return
+    try:
+        payload = source.fetch(session, "hour_bars", symbol)
+    except TemporaryFailure:
+        retries.append(f"hour_bars:{symbol}")
+        return
+    calls.append(("hour_bars", symbol))
+    if not isinstance(payload, tuple) or any(not isinstance(hour, HourQuote) for hour in payload):
+        raise EvaluationError("capture is unusable")
+    hours = tuple(hour for hour in payload if isinstance(hour, HourQuote))
+    count = _spike(session, cycle.now, bars, hours)
+    spikes.append((symbol, count))
+    _create(hours_path, _hours_body(session, symbol, hours, cycle.now, count))
+
+
+def _spike(
+    session: date, now: datetime, bars: tuple[DailyBar, ...], hours: tuple[HourQuote, ...]
+) -> int | None:
+    rules = load_policy(_POLICY).policy.hypotheses.universe.manipulation
+    try:
+        return spike_candle_count(
+            bars,
+            hours,
+            session=session,
+            as_of=now,
+            formula=rules.spike_count,
+            zscore_above=Decimal(str(rules.volume_zscore_above)),
+        )
+    except EvaluationError as error:
+        if str(error) != "spike evidence is inconsistent":
+            raise
+        return None
+
+
+def _finalize(
+    root: Path, cycle: CaptureCycle, git_sha: str
+) -> tuple[SessionReadiness | None, bool]:
+    session = cycle.post_close
+    if session is None:
+        return None, False
+    if _manifest(root, session).is_file():
+        return None, True
+    if not _stage_ready(root, session):
+        return None, False
+    result = populate_session(
+        root,
+        session,
+        cycle.now,
+        load_closed(root, session),
+        git_sha=git_sha,
+        weights_present=False,
+    )
+    return result.readiness, result.manifest is not None
+
+
+def _stage_ready(root: Path, session: date) -> bool:
+    universe = _universe_path(root, session)
+    if not universe.is_file() or not _ticker_path(root, session).is_file():
+        return False
+    if not _peg_path(root, session).is_file():
+        return False
+    if any(not _regime_path(root, session, series).is_file() for series in _REGIME):
+        return False
+    document = json.loads(universe.read_text())
+    raw = document.get("symbols") if isinstance(document, dict) else None
+    if not isinstance(raw, list) or not raw or any(not isinstance(symbol, str) for symbol in raw):
+        return False
+    return all(_symbol_ready(root, session, symbol) for symbol in raw)
+
+
+def _symbol_ready(root: Path, session: date, symbol: str) -> bool:
+    return (
+        _final_path(root, session, symbol).is_file()
+        and _hours_path(root, session, symbol).is_file()
+        and _packet_path(root, session, symbol).is_file()
+        and book_is_stored(root, session, symbol)
+        and _classification_path(root, session, symbol).is_file()
+    )
+
+
+def _one(
+    root: Path,
+    session: date,
+    source: CaptureSource,
+    kind: str,
+    symbol: str | None,
+    calls: list[tuple[str, str | None]],
+    skipped: list[str],
+    retries: list[str],
+    keep: Callable[[Path, date, str | None, object], None],
+) -> None:
+    label = kind if symbol is None else f"{kind}:{symbol}"
+    if _present(root, session, kind, symbol):
+        skipped.append(label)
+        return
+    try:
+        payload = source.fetch(session, kind, symbol)
+    except TemporaryFailure:
+        retries.append(label)
+        return
+    calls.append((kind, symbol))
+    keep(root, session, symbol, payload)
+
+
+def _present(root: Path, session: date, kind: str, symbol: str | None) -> bool:
+    if kind == "universe":
+        return _universe_path(root, session).is_file()
+    if kind == "ticker":
+        return _ticker_path(root, session).is_file()
+    if kind == "peg":
+        return _peg_path(root, session).is_file()
+    if kind == "regime" and symbol is not None:
+        return _regime_path(root, session, symbol).is_file()
+    if kind == "classification" and symbol is not None:
+        return _classification_path(root, session, symbol).is_file()
+    return False
+
+
+def _keep_universe(root: Path, session: date, symbol: str | None, payload: object) -> None:
+    del symbol
+    if not isinstance(payload, UniverseCapture):
+        raise EvaluationError("capture is unusable")
+    store_universe(root, session, payload)
+
+
+def _keep_ticker(root: Path, session: date, symbol: str | None, payload: object) -> None:
+    del symbol
+    if (
+        not isinstance(payload, tuple)
+        or len(payload) != 3
+        or not isinstance(payload[0], list)
+        or not isinstance(payload[2], datetime)
+        or not (payload[1] is None or isinstance(payload[1], datetime))
+    ):
+        raise EvaluationError("capture is unusable")
+    source_timestamp, captured_at = payload[1], payload[2]
+    _belongs(session, captured_at)
+    if captured_at > session_close(session):
+        raise EvaluationError("capture is after the close")
+    if source_timestamp is not None:
+        _utc(source_timestamp, "source_timestamp")
+    _create(
+        _ticker_path(root, session),
+        _json(
+            {
+                "captured_at": _iso(captured_at),
+                "rows": payload[0],
+                "session": session.isoformat(),
+                "source_timestamp": None if source_timestamp is None else _iso(source_timestamp),
+            }
+        ),
+    )
+
+
+def _keep_peg(root: Path, session: date, symbol: str | None, payload: object) -> None:
+    del symbol
+    if (
+        not isinstance(payload, tuple)
+        or len(payload) != 3
+        or not isinstance(payload[0], tuple)
+        or not isinstance(payload[2], datetime)
+        or not (payload[1] is None or isinstance(payload[1], datetime))
+    ):
+        raise EvaluationError("capture is unusable")
+    closes, source_timestamp, captured_at = payload
+    if any(not isinstance(value, Decimal) for value in closes):
+        raise EvaluationError("capture is unusable")
+    _belongs(session, captured_at)
+    if captured_at > session_close(session):
+        raise EvaluationError("capture is after the close")
+    if source_timestamp is not None:
+        _utc(source_timestamp, "source_timestamp")
+    _create(
+        _peg_path(root, session),
+        _json(
+            {
+                "captured_at": _iso(captured_at),
+                "closes": [format(value, "f") for value in closes],
+                "session": session.isoformat(),
+                "source_timestamp": None if source_timestamp is None else _iso(source_timestamp),
+                "symbol": "USDCUSDT",
+            }
+        ),
+    )
+
+
+def _keep_regime(root: Path, session: date, symbol: str | None, payload: object) -> None:
+    del symbol
+    if not isinstance(payload, RegimeCapture):
+        raise EvaluationError("capture is unusable")
+    store_regime(root, session, payload)
+
+
+def _keep_classification(root: Path, session: date, symbol: str | None, payload: object) -> None:
+    if not isinstance(payload, tuple) or len(payload) != 2:
+        raise EvaluationError("capture is unusable")
+    item, captured_at = payload
+    if not isinstance(item, SymbolClassification) or not isinstance(captured_at, datetime):
+        raise EvaluationError("capture is unusable")
+    if symbol is not None and item.symbol != symbol:
+        raise EvaluationError("conflicting observation")
+    _belongs(session, captured_at)
+    store_classification(root, session, item, captured_at)
+
+
+def _bars_of(path: Path) -> tuple[DailyBar, ...]:
+    document = json.loads(path.read_text())
+    rows = document["bars"] if isinstance(document, dict) else None
+    if not isinstance(rows, list):
+        raise EvaluationError("capture is unusable")
+    return tuple(_bar(row) for row in rows)
+
+
+def _bar(row: object) -> DailyBar:
+    if not isinstance(row, dict):
+        raise EvaluationError("capture is unusable")
+    return DailyBar(
+        symbol=str(row["symbol"]),
+        open_date=date.fromisoformat(str(row["open_date"])),
+        open=Decimal(str(row["open"])),
+        high=Decimal(str(row["high"])),
+        low=Decimal(str(row["low"])),
+        close=Decimal(str(row["close"])),
+        volume=Decimal(str(row["volume"])),
+        quote_volume=Decimal(str(row["quote_volume"])),
+        trade_count=int(str(row["trade_count"])),
+        taker_buy_base_volume=Decimal(str(row["taker_buy_base_volume"])),
+        taker_buy_quote_volume=Decimal(str(row["taker_buy_quote_volume"])),
+    )
+
+
+def _book_body(session: date, symbol: str, book: BookShot) -> bytes:
+    source_timestamp = None if book.source_timestamp is None else _iso(book.source_timestamp)
+    return _json(
+        {
+            "session": session.isoformat(),
+            "symbol": symbol,
+            "spread_bps": [format(book.spread_bps, "f")],
+            "spread_snapshots": 1,
+            "source_timestamp": source_timestamp,
+            "captured_at": _iso(book.captured_at),
+            "bids": [[format(price, "f"), format(quantity, "f")] for price, quantity in book.bids],
+            "asks": [[format(price, "f"), format(quantity, "f")] for price, quantity in book.asks],
+        }
+    )
+
+
+def _hours_body(
+    session: date,
+    symbol: str,
+    hours: Sequence[HourQuote],
+    captured_at: datetime,
+    count: int | None,
+) -> bytes:
+    return _json(
+        {
+            "session": session.isoformat(),
+            "symbol": symbol,
+            "captured_at": _iso(captured_at),
+            "spike_candle_count": count,
+            "hours": [
+                {
+                    "open_ms": hour.open_ms,
+                    "close_ms": hour.close_ms,
+                    "quote_volume": format(hour.quote_volume, "f"),
+                }
+                for hour in hours
+            ],
+        }
+    )
+
+
+def _utc(moment: datetime, label: str) -> None:
+    if moment.tzinfo is None or moment.utcoffset() != timedelta(0):
+        raise EvaluationError(f"{label} must be timezone-aware UTC")
+
+
+def _create(path: Path, body: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() == body:
+            return
+        raise EvaluationError("conflicting observation")
+    path.write_bytes(body)
+
+
+def _json(document: dict[str, object]) -> bytes:
+    return json.dumps(document, sort_keys=True).encode()
+
+
+def _iso(moment: datetime) -> str:
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _manifest(root: Path, session: date) -> Path:
+    return root / "sessions" / f"date={session.isoformat()}" / "manifest.json"
+
+
+def _universe_path(root: Path, session: date) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "universe.json"
+
+
+def _ticker_path(root: Path, session: date) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "ticker.json"
+
+
+def _peg_path(root: Path, session: date) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "peg" / "symbol=USDCUSDT.json"
+
+
+def _book_path(root: Path, session: date, symbol: str) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "book" / f"symbol={symbol}.json"
+
+
+def _liquidity_path(root: Path, session: date, symbol: str) -> Path:
+    folder = root / "captures" / f"session={session.isoformat()}" / "liquidity"
+    return folder / f"symbol={symbol}.json"
+
+
+def _classification_path(root: Path, session: date, symbol: str) -> Path:
+    folder = root / "captures" / f"session={session.isoformat()}" / "classification"
+    return folder / f"symbol={symbol}.json"
+
+
+def _regime_path(root: Path, session: date, series: str) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "regime" / f"{series}.json"
+
+
+def _packet_path(root: Path, session: date, symbol: str) -> Path:
+    folder = root / "captures" / f"session={session.isoformat()}" / "candidates"
+    return folder / f"symbol={symbol}.json"
+
+
+def _final_path(root: Path, session: date, symbol: str) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "final" / f"symbol={symbol}.json"
+
+
+def _hours_path(root: Path, session: date, symbol: str) -> Path:
+    return root / "captures" / f"session={session.isoformat()}" / "hours" / f"symbol={symbol}.json"
