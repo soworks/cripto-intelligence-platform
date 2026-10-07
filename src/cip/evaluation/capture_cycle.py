@@ -127,6 +127,8 @@ def store_session_book(root: Path, session: date, symbol: str, book: BookShot) -
     prospective_session(session)
     if session == _SEALED:
         raise EvaluationError("sealed session stays sealed")
+    if _manifest(root, session).is_file():
+        raise EvaluationError("finalized session is sealed")
     close = session_close(session)
     _utc(book.captured_at, "captured_at")
     if book.captured_at > close:
@@ -288,9 +290,13 @@ def _one_bar(
     if not isinstance(payload, tuple) or any(not isinstance(hour, HourQuote) for hour in payload):
         raise EvaluationError("capture is unusable")
     hours = tuple(hour for hour in payload if isinstance(hour, HourQuote))
-    count = _spike(session, cycle.now, bars, hours)
+    grid = _exact_hours(hours, session)
+    if grid is None:
+        retries.append(f"hour_bars:{symbol}")
+        return
+    count = _spike(session, cycle.now, bars, grid)
     spikes.append((symbol, count))
-    _create(hours_path, _hours_body(session, symbol, hours, cycle.now, count))
+    _create(hours_path, _hours_body(session, symbol, grid, cycle.now, count))
 
 
 def _spike(
@@ -310,6 +316,30 @@ def _spike(
         if str(error) != "spike evidence is inconsistent":
             raise
         return None
+
+
+def _exact_hours(hours: Sequence[HourQuote], session: date) -> tuple[HourQuote, ...] | None:
+    """The session day's 24 exact hours, or nothing while that grid is incomplete."""
+    hour_ms = 3_600_000
+    opened = datetime(session.year, session.month, session.day, tzinfo=UTC)
+    midnight = int(opened.timestamp()) * 1000
+    expected = [midnight + offset * hour_ms for offset in range(24)]
+    wanted = set(expected)
+    found: dict[int, HourQuote] = {}
+    seen: set[int] = set()
+    for hour in hours:
+        if hour.open_ms % hour_ms != 0 or hour.close_ms != hour.open_ms + hour_ms - 1:
+            raise EvaluationError("capture is unusable")
+        if not hour.quote_volume.is_finite() or hour.quote_volume < 0:
+            raise EvaluationError("capture is unusable")
+        if hour.open_ms in seen:
+            raise EvaluationError("capture is unusable")
+        seen.add(hour.open_ms)
+        if hour.open_ms in wanted:
+            found[hour.open_ms] = hour
+    if len(found) != 24:
+        return None
+    return tuple(found[open_ms] for open_ms in expected)
 
 
 def _finalize(
@@ -415,10 +445,10 @@ def _keep_ticker(root: Path, session: date, symbol: str | None, payload: object)
         raise EvaluationError("capture is unusable")
     source_timestamp, captured_at = payload[1], payload[2]
     _belongs(session, captured_at)
-    if captured_at > session_close(session):
+    close = session_close(session)
+    if captured_at > close:
         raise EvaluationError("capture is after the close")
-    if source_timestamp is not None:
-        _utc(source_timestamp, "source_timestamp")
+    _source_before_close(source_timestamp, close)
     _create(
         _ticker_path(root, session),
         _json(
@@ -446,10 +476,10 @@ def _keep_peg(root: Path, session: date, symbol: str | None, payload: object) ->
     if any(not isinstance(value, Decimal) for value in closes):
         raise EvaluationError("capture is unusable")
     _belongs(session, captured_at)
-    if captured_at > session_close(session):
+    close = session_close(session)
+    if captured_at > close:
         raise EvaluationError("capture is after the close")
-    if source_timestamp is not None:
-        _utc(source_timestamp, "source_timestamp")
+    _source_before_close(source_timestamp, close)
     _create(
         _peg_path(root, session),
         _json(
@@ -548,6 +578,14 @@ def _hours_body(
             ],
         }
     )
+
+
+def _source_before_close(moment: datetime | None, close: datetime) -> None:
+    if moment is None:
+        return
+    _utc(moment, "source_timestamp")
+    if moment > close:
+        raise EvaluationError("capture is after the close")
 
 
 def _utc(moment: datetime, label: str) -> None:

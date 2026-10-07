@@ -14,6 +14,7 @@ from cip.evaluation.capture_cycle import (
     _one_bar,
     _post_close,
     _present,
+    _spike,
     book_is_stored,
     capture_cycle,
     run_capture_cycle,
@@ -272,6 +273,11 @@ def test_a_different_second_book_is_a_conflict_and_the_first_remains(tmp_path: P
     store_session_book(tmp_path, OPEN, "BTCUSDT", original)
     stored = tmp_path / "captures/session=2026-10-07/book/symbol=BTCUSDT.json"
     assert stored.read_bytes() == before
+    manifest = tmp_path / "sessions/date=2026-10-07/manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}")
+    with pytest.raises(EvaluationError, match="finalized session is sealed"):
+        store_session_book(tmp_path, OPEN, "ETHUSDT", original)
 
 
 def test_an_existing_liquidity_snapshot_is_not_fetched_again(tmp_path: Path) -> None:
@@ -434,11 +440,19 @@ def test_unusable_provider_payloads_are_refused(tmp_path: Path) -> None:
     broken[(OPEN, "ticker", None)] = (["BTCUSDT"], NOW, AFTER)
     with pytest.raises(EvaluationError, match="capture is after the close"):
         run("ticker-late", broken)
+    broken = dict(base)
+    broken[(OPEN, "ticker", None)] = (["BTCUSDT"], AFTER, NOW)
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        run("ticker-source", broken)
     run("ticker-undated", {**base, (OPEN, "ticker", None): (["BTCUSDT"], None, NOW)}, ())
     broken = dict(base)
     broken[(OPEN, "peg", "USDCUSDT")] = ((Decimal("1"),), NOW, AFTER)
     with pytest.raises(EvaluationError, match="capture is after the close"):
         run("peg-late", broken)
+    broken = dict(base)
+    broken[(OPEN, "peg", "USDCUSDT")] = ((Decimal("1"),), AFTER, NOW)
+    with pytest.raises(EvaluationError, match="capture is after the close"):
+        run("peg-source", broken)
     broken = dict(base)
     broken[(OPEN, "peg", "USDCUSDT")] = (("1",), None, NOW)
     with pytest.raises(EvaluationError, match="capture is unusable"):
@@ -514,6 +528,57 @@ def test_post_close_retries_and_refuses_a_malformed_hour(tmp_path: Path) -> None
         run_capture_cycle(tmp_path / "typed", AFTER, Source(typed), ("BTCUSDT",), requested=OPEN)
     hours = tmp_path / "malformed/captures/session=2026-10-07/hours/symbol=BTCUSDT.json"
     assert not hours.exists()
+    short: Answers = {
+        (OPEN, "daily_bars", "BTCUSDT"): _days(OPEN, Decimal("4800")),
+        (OPEN, "hour_bars", "BTCUSDT"): _hours(OPEN, (Decimal("1"),) * 23),
+    }
+    first = run_capture_cycle(
+        tmp_path / "short", AFTER, Source(short), ("BTCUSDT",), requested=OPEN
+    )
+    assert "hour_bars:BTCUSDT" in first.retries
+    assert not (tmp_path / "short/captures/session=2026-10-07/hours").exists()
+    again = Source(short)
+    run_capture_cycle(tmp_path / "short", AFTER, again, ("BTCUSDT",), requested=OPEN)
+    assert ("hour_bars", "BTCUSDT", OPEN) in again.calls
+    full = _hours(OPEN, (Decimal("4800"),) + (Decimal("0"),) * 23)
+    extra_open = full[-1].open_ms + _HOUR_MS
+    extra = (*full, HourQuote(extra_open, extra_open + _HOUR_MS - 1, Decimal("9")))
+    kept: Answers = {
+        (OPEN, "daily_bars", "BTCUSDT"): _days(OPEN, Decimal("4800")),
+        (OPEN, "hour_bars", "BTCUSDT"): extra,
+    }
+    report = run_capture_cycle(
+        tmp_path / "extra", AFTER, Source(kept), ("BTCUSDT",), requested=OPEN
+    )
+    document = json.loads(
+        (tmp_path / "extra/captures/session=2026-10-07/hours/symbol=BTCUSDT.json").read_text()
+    )
+    assert report.spike_counts == (("BTCUSDT", 1),)
+    assert len(document["hours"]) == 24
+    duplicate = (*full, full[0])
+    refused: Answers = {
+        (OPEN, "daily_bars", "BTCUSDT"): _days(OPEN, Decimal("4800")),
+        (OPEN, "hour_bars", "BTCUSDT"): duplicate,
+    }
+    with pytest.raises(EvaluationError, match="capture is unusable"):
+        run_capture_cycle(
+            tmp_path / "duplicate", AFTER, Source(refused), ("BTCUSDT",), requested=OPEN
+        )
+    negative = (*full[:-1], HourQuote(full[-1].open_ms, full[-1].close_ms, Decimal("-1")))
+    bad_quote: Answers = {
+        (OPEN, "daily_bars", "BTCUSDT"): _days(OPEN, Decimal("4800")),
+        (OPEN, "hour_bars", "BTCUSDT"): negative,
+    }
+    with pytest.raises(EvaluationError, match="capture is unusable"):
+        run_capture_cycle(
+            tmp_path / "negative", AFTER, Source(bad_quote), ("BTCUSDT",), requested=OPEN
+        )
+
+
+def test_a_duplicate_daily_date_is_not_turned_into_a_spike_count() -> None:
+    repeated = (_bar(OPEN, Decimal("1")), _bar(OPEN, Decimal("1")))
+    with pytest.raises(EvaluationError, match="capture is unusable"):
+        _spike(OPEN, AFTER, repeated, ())
 
 
 def test_readiness_waits_for_each_pre_close_file(tmp_path: Path) -> None:
