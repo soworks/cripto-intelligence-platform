@@ -157,20 +157,22 @@ def parse_coingecko_markets(payload: object) -> dict[str, CapReading]:
     if not isinstance(payload, list):
         raise EvaluationError("capture is unusable")
     found: dict[str, CapReading] = {}
+    seen: set[str] = set()
     for row in payload:
         if not isinstance(row, dict):
             raise EvaluationError("capture is unusable")
         asset_id = row.get("id")
         if not isinstance(asset_id, str) or asset_id == "":
             raise EvaluationError("capture is unusable")
+        if asset_id in seen:
+            raise EvaluationError("market catalog repeats an asset")
+        seen.add(asset_id)
         amount = _amount(row.get("market_cap"))
         if amount is None:
             continue
         stamp = _moment(row.get("last_updated"))
         if stamp is None:
             raise EvaluationError("undated fundamental")
-        if asset_id in found:
-            raise EvaluationError("market catalog repeats an asset")
         found[asset_id] = CapReading("coingecko", asset_id, amount, stamp)
     return found
 
@@ -333,12 +335,20 @@ def _migration(code: str, row: Mapping[str, object]) -> bool | None:
         return True
     if tag != "sw":
         return None
-    old = row.get("oldAssetCode")
-    new = row.get("newAssetCode")
-    if code == old and code != new:
+    old = _asset_code(row.get("oldAssetCode"))
+    new = _asset_code(row.get("newAssetCode"))
+    if old is None or new is None or old == new:
+        return None
+    if code == old:
         return True
-    if code == new and code != old:
+    if code == new:
         return False
+    return None
+
+
+def _asset_code(value: object) -> str | None:
+    if isinstance(value, str) and value != "":
+        return value
     return None
 
 
