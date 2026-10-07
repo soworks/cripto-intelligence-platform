@@ -31,3 +31,15 @@ variable "log_retention_days" {
 variable "schedule_enabled" {
   type = bool
 }
+
+variable "capture_enabled" {
+  type        = bool
+  default     = false
+  description = "Create the evidence-capture Lambda. This is not the DecisionRecord workload."
+}
+
+variable "capture_schedule_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable the hourly evidence-capture schedule after the role is capture-only."
+}
