@@ -102,6 +102,7 @@ def run_daily_scan(
     verified_ids: Mapping[str, str],
     weights: Mapping[str, Decimal] | None,
     writer: DecisionWriter,
+    lineage: Sequence[SourceStamp] = (),
 ) -> ScanResult:
     """Evaluate every snapshot symbol and store one decision for each."""
     evaluated_at = _close(session, as_of)
@@ -143,7 +144,15 @@ def run_daily_scan(
     )
     ranks = _ranks(prepared)
     records = tuple(
-        _record(item, ranks.get(item.symbol), cohort, evaluated_at, policy.version, git_sha)
+        _record(
+            item,
+            ranks.get(item.symbol),
+            cohort,
+            evaluated_at,
+            policy.version,
+            git_sha,
+            lineage,
+        )
         for item in prepared
     )
     stored = tuple(writer.write(record) for record in records)
@@ -311,6 +320,7 @@ def _record(
     evaluated_at: datetime,
     policy_version: str,
     git_sha: str,
+    lineage: Sequence[SourceStamp],
 ) -> DecisionRecord:
     return DecisionRecord(
         cohort=cohort,
@@ -326,7 +336,7 @@ def _record(
         rank=rank,
         regime=item.regime,
         raw_regime=item.raw_regime,
-        sources=item.sources,
+        sources=item.sources + tuple(lineage),
     )
 
 
