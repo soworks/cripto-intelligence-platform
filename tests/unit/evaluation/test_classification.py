@@ -110,6 +110,23 @@ def test_delisting_and_migration_need_evidence_for_the_negative() -> None:
     assert assets["BLANK"].pending_migration is None
 
 
+def test_a_swap_with_one_missing_code_stays_unknown() -> None:
+    assets = parse_asset_catalog(
+        _catalog(
+            _asset("NEXT", swapTag="sw", oldAssetCode=None, newAssetCode="NEXT"),
+            _asset("NEXT2", swapTag="sw", oldAssetCode="", newAssetCode="NEXT2"),
+            _asset("OLD", swapTag="sw", oldAssetCode="OLD", newAssetCode=""),
+            _asset("OLD2", swapTag="sw", oldAssetCode="OLD2", newAssetCode=None),
+            _asset("SIDE", swapTag="sw", oldAssetCode="OLD", newAssetCode="NEXT"),
+        )
+    )
+    assert assets["NEXT"].pending_migration is None
+    assert assets["NEXT2"].pending_migration is None
+    assert assets["OLD"].pending_migration is None
+    assert assets["OLD2"].pending_migration is None
+    assert assets["SIDE"].pending_migration is None
+
+
 def test_deposit_suspension_follows_the_coin_boolean_and_ignores_balances() -> None:
     coins = parse_coin_config(
         {"success": True, "data": [_coin("BTC"), _coin("HALT", deposits=False, withdrawals=False)]}
@@ -246,6 +263,20 @@ def test_market_cap_parsers_keep_the_id_and_refuse_an_undated_value() -> None:
             [
                 {"id": "bitcoin", "market_cap": 1, "last_updated": "2026-10-07T12:00:00Z"},
                 {"id": "bitcoin", "market_cap": 2, "last_updated": "2026-10-07T12:00:00Z"},
+            ]
+        )
+    with pytest.raises(EvaluationError, match="repeats an asset"):
+        parse_coingecko_markets(
+            [
+                {"id": "bitcoin", "market_cap": None, "last_updated": None},
+                {"id": "bitcoin", "market_cap": 1, "last_updated": "2026-10-07T12:00:00Z"},
+            ]
+        )
+    with pytest.raises(EvaluationError, match="repeats an asset"):
+        parse_coingecko_markets(
+            [
+                {"id": "bitcoin", "market_cap": 1, "last_updated": "2026-10-07T12:00:00Z"},
+                {"id": "bitcoin", "market_cap": None, "last_updated": None},
             ]
         )
     cmc = parse_cmc_quotes(
