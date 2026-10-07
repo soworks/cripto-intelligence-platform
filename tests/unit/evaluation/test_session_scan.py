@@ -302,6 +302,9 @@ def test_a_finalized_session_records_one_decision_per_frozen_symbol(tmp_path: Pa
     manifest = replay_session(tmp_path, SESSION).manifest
     assert manifest is not None
     assert freeze.observed_at == manifest.finalized_at
+    assert manifest.input_manifest_version == 1
+    assert f"manifest={manifest.input_manifest_version}" in freeze.provenance
+    assert f"finalized_at={manifest.finalized_at.isoformat()}" in freeze.provenance
     assert f"git_sha={FREEZE_SHA}" in freeze.provenance
     assert f"universe={manifest.universe_snapshot_sha256}" in freeze.provenance
     assert f"bars={manifest.bars_manifest_sha256}" in freeze.provenance
