@@ -29,6 +29,6 @@ module "workload" {
   log_retention_days  = 90
   schedule_enabled    = true
   capture_enabled     = true
-  # Hourly capture stays off until the deployed role is confirmed evidence-only.
-  capture_schedule_enabled = false
+  # Hourly capture is on after the deployed role was confirmed evidence-only.
+  capture_schedule_enabled = true
 }
