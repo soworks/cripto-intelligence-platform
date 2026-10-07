@@ -14,6 +14,7 @@ from cip.domain.errors import (
     ExchangeBannedError,
     ExchangeGeoBlockedError,
     MarketDataError,
+    RecorderError,
 )
 from cip.evaluation.capture_cycle import CycleReport, capture_cycle
 from cip.evaluation.session import SessionReadiness, session_close
@@ -412,6 +413,21 @@ def test_provider_failures_stay_retryable_and_a_ban_does_not() -> None:
     with pytest.raises(TemporaryFailure):
         flaky.fetch(OPEN, "regime", "btc_dominance")
 
+    def banned(url: str, params: dict[str, str] | None) -> object:
+        del url, params
+        raise RecorderError("status 418")
+
+    def rejected(url: str, params: dict[str, str] | None) -> object:
+        del url, params
+        raise RecorderError("status 500")
+
+    klines = EvidenceSource(_Spot(), AFTER, Decimal("0.02"), BASE, banned)
+    with pytest.raises(ExchangeBannedError):
+        klines.fetch(OPEN, "daily_bars", "BTCUSDT")
+    retryable = EvidenceSource(_Spot(), AFTER, Decimal("0.02"), BASE, rejected)
+    with pytest.raises(TemporaryFailure):
+        retryable.fetch(OPEN, "hour_bars", "BTCUSDT")
+
 
 def test_an_empty_book_and_a_closed_peg_hour_are_not_stored() -> None:
     spot = _Spot()
@@ -649,6 +665,7 @@ def test_the_workload_is_capture_only() -> None:
         assert name not in terraform
     assert 'handler       = "cip.handlers.session_capture.capture"' in terraform
     assert 'schedule_expression = "rate(1 hour)"' in terraform
+    assert "state               = var.capture_schedule_enabled" in terraform
     assert "CAPTURE_SYMBOLS" in terraform
     assert '"BTCUSDT"' in terraform
     assert "dynamodb" not in terraform
