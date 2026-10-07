@@ -1,0 +1,455 @@
+"""Point-in-time liquidity observations for one prospective session.
+
+This module does not call a provider and does not change liquidity thresholds.
+A short sample stays missing. The session bar and the spike count are not filled.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+from cip.adapters.market import Depth, parse_klines
+from cip.domain.errors import EvaluationError, MarketDataError, RecorderError
+from cip.evaluation.features import _median
+from cip.evaluation.prospect import prospective_session
+from cip.evaluation.session import session_close
+from cip.history.bars import DailyBar
+from cip.recorders.observation import Observation
+from cip.recorders.sources import book_observations
+
+_SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
+_SEALED = date(2026, 10, 6)
+_VOLUME_DAYS = 30
+_BASELINE_DAYS = 30
+_HOUR_MS = 3_600_000
+
+
+@dataclass(frozen=True)
+class BookReading:
+    """One order-book observation. The spread count is the number of books."""
+
+    spread_bps: Decimal
+    snapshots: int
+    bid_usd: Decimal
+    ask_usd: Decimal
+    depth_usd_per_side: Decimal
+
+
+@dataclass(frozen=True)
+class LiquidityDerived:
+    """Gate inputs reproduced from raw bars and quotes. Missing stays missing."""
+
+    median_quote_volume_30d_usd: Decimal | None
+    day_quote_volume_usd: Decimal | None
+    volume_zscore: Decimal | None
+    price_move: Decimal | None
+    trade_size_stdev: Decimal | None
+    taker_buy_ratio: None
+    spike_candle_count: None
+    turnover: Decimal | None
+    binance_volume_share: Decimal | None
+
+
+@dataclass(frozen=True)
+class LiquidityCapture:
+    """Raw observations and the inputs derived from them."""
+
+    symbol: str
+    bars: tuple[DailyBar, ...]
+    median_quote_volume_30d_usd: Decimal | None
+    day_quote_volume_usd: Decimal | None
+    spread_bps: tuple[Decimal, ...]
+    median_spread_bps: Decimal | None
+    spread_snapshots: int | None
+    bid_usd: Decimal | None
+    ask_usd: Decimal | None
+    depth_usd_per_side: Decimal | None
+    binance_quote_volume_24h: Decimal | None
+    market_cap_usd: Decimal | None
+    aggregate_volume_usd: Decimal | None
+    turnover: Decimal | None
+    volume_zscore: Decimal | None
+    price_move: Decimal | None
+    taker_buy_ratio: Decimal | None
+    spike_candle_count: int | None
+    trade_size_stdev: Decimal | None
+    binance_volume_share: Decimal | None
+    stablecoin_peg_deviation: Decimal | None
+    peg_deviation_hours: int | None
+    bar_captured_at: datetime
+    book_observed_at: datetime | None
+    ticker_captured_at: datetime | None
+    market_source_timestamp: datetime | None
+    peg_captured_at: datetime | None
+
+
+def parse_daily_klines(payload: object, *, symbol: str) -> tuple[DailyBar, ...]:
+    """Daily bars from a kline payload. Taker volume is kept."""
+    if _SYMBOL.fullmatch(symbol) is None:
+        raise EvaluationError("capture is unusable")
+    if not isinstance(payload, list):
+        raise EvaluationError("capture is unusable")
+    try:
+        rows = parse_klines(payload)
+    except MarketDataError as error:
+        raise EvaluationError("capture is unusable") from error
+    bars: list[DailyBar] = []
+    for raw, row in zip(payload, rows, strict=True):
+        if not isinstance(raw, list) or len(raw) < 11:
+            raise EvaluationError("capture is unusable")
+        taker_base = _decimal(raw[9])
+        taker_quote = _decimal(raw[10])
+        opened = datetime.fromtimestamp(row.open_time / 1000, UTC).date()
+        bars.append(
+            DailyBar(
+                symbol=symbol,
+                open_date=opened,
+                open=row.open,
+                high=row.high,
+                low=row.low,
+                close=row.close,
+                volume=row.volume,
+                quote_volume=row.quote_volume,
+                trade_count=row.trade_count,
+                taker_buy_base_volume=taker_base,
+                taker_buy_quote_volume=taker_quote,
+            )
+        )
+    return tuple(bars)
+
+
+def quote_window(bars: Sequence[DailyBar], session: date) -> tuple[DailyBar, ...] | None:
+    """Consecutive completed days ending the day before the session."""
+    prior = [bar for bar in bars if bar.open_date < session]
+    if not prior:
+        return None
+    ordered = tuple(sorted(prior, key=lambda bar: bar.open_date))
+    if ordered[-1].open_date != session - timedelta(days=1):
+        return None
+    dates = [bar.open_date for bar in ordered]
+    if len(dates) != len(set(dates)):
+        raise EvaluationError("capture is unusable")
+    kept = [ordered[-1]]
+    for bar in reversed(ordered[:-1]):
+        if bar.open_date != kept[-1].open_date - timedelta(days=1):
+            break
+        kept.append(bar)
+    kept.reverse()
+    return tuple(kept)
+
+
+def derive_liquidity(
+    bars: Sequence[DailyBar],
+    session: date,
+    *,
+    binance_quote_volume: Decimal | None = None,
+    market_cap: Decimal | None = None,
+    aggregate_volume: Decimal | None = None,
+) -> LiquidityDerived:
+    """Reproduce the gate inputs. The session bar is not a taker ratio."""
+    window = quote_window(bars, session)
+    median, day = _volume_pair(window)
+    return LiquidityDerived(
+        median_quote_volume_30d_usd=median,
+        day_quote_volume_usd=day,
+        volume_zscore=_zscore(window, _quote),
+        price_move=_move(window),
+        trade_size_stdev=_trade_distance(window),
+        taker_buy_ratio=None,
+        spike_candle_count=None,
+        turnover=_ratio(binance_quote_volume, market_cap),
+        binance_volume_share=volume_share(binance_quote_volume, aggregate_volume),
+    )
+
+
+def book_metrics(book: Depth, *, band: Decimal, observed_at: datetime) -> BookReading | None:
+    """Spread and the thinner side of the ±2% book. An empty book is missing."""
+    try:
+        spread, depth = book_observations("BOOK", book, observed_at=observed_at, depth_band=band)
+    except RecorderError:
+        return None
+    bid = _named(depth, "bid_usd")
+    ask = _named(depth, "ask_usd")
+    return BookReading(_named(spread, "spread_bps"), 1, bid, ask, min(bid, ask))
+
+
+def volume_share(binance_quote: Decimal | None, aggregate: Decimal | None) -> Decimal | None:
+    """Binance volume over CoinGecko aggregate. A larger Binance print is not a share."""
+    if binance_quote is None or aggregate is None or aggregate <= 0 or binance_quote > aggregate:
+        return None
+    if binance_quote < 0:
+        raise EvaluationError("capture is unusable")
+    return binance_quote / aggregate
+
+
+def peg_reading(closes: Sequence[Decimal], *, limit: Decimal) -> tuple[Decimal, int] | None:
+    """Latest closed-hour distance from 1, and how many trailing hours exceed the band."""
+    if not closes:
+        return None
+    hours = 0
+    for close in reversed(closes):
+        if abs(close - 1) > limit:
+            hours += 1
+            continue
+        break
+    return abs(closes[-1] - 1), hours
+
+
+def closed_hour_closes(payload: object, *, captured_at: datetime) -> tuple[Decimal, ...]:
+    """Hourly closes whose candle has finished. The open hour is dropped."""
+    if not isinstance(payload, list):
+        raise EvaluationError("capture is unusable")
+    closes: list[Decimal] = []
+    for row in payload:
+        if not isinstance(row, list) or len(row) < 7:
+            raise EvaluationError("capture is unusable")
+        close_time = row[6]
+        if type(close_time) is not int:
+            raise EvaluationError("capture is unusable")
+        if datetime.fromtimestamp((close_time + 1) / 1000, UTC) > captured_at:
+            continue
+        closes.append(_decimal(row[4]))
+    return tuple(closes)
+
+
+def store_liquidity(root: Path, session: date, item: LiquidityCapture) -> None:
+    """Store one pre-close liquidity document. Derived inputs must match the raw bars."""
+    prospective_session(session)
+    if session == _SEALED:
+        raise EvaluationError("sealed session stays sealed")
+    if (root / "sessions" / f"date={session.isoformat()}" / "manifest.json").exists():
+        raise EvaluationError("finalized session is sealed")
+    _checked(session, item)
+    _create(_path(root, session, item.symbol), _body(session, item))
+
+
+def _volume_pair(window: tuple[DailyBar, ...] | None) -> tuple[Decimal | None, Decimal | None]:
+    if window is None or len(window) < _VOLUME_DAYS:
+        return None, None
+    quotes = [bar.quote_volume for bar in window[-_VOLUME_DAYS:]]
+    return _median(quotes), min(quotes)
+
+
+def _zscore(
+    window: tuple[DailyBar, ...] | None,
+    amount: Callable[[DailyBar], Decimal | None],
+) -> Decimal | None:
+    if window is None or len(window) < _BASELINE_DAYS + 1:
+        return None
+    span = window[-(_BASELINE_DAYS + 1) : -1]
+    baseline = [amount(bar) for bar in span]
+    if any(value is None for value in baseline):
+        return None
+    numbers = [value for value in baseline if value is not None]
+    deviation = _sample_stdev(numbers)
+    current = amount(window[-1])
+    if deviation is None or current is None:
+        return None
+    mean = sum(numbers, Decimal(0)) / Decimal(len(numbers))
+    return (current - mean) / deviation
+
+
+def _quote(bar: DailyBar) -> Decimal:
+    return bar.quote_volume
+
+
+def _trade_size(bar: DailyBar) -> Decimal | None:
+    if bar.trade_count <= 0:
+        return None
+    return bar.quote_volume / Decimal(bar.trade_count)
+
+
+def _trade_distance(window: tuple[DailyBar, ...] | None) -> Decimal | None:
+    return _zscore(window, _trade_size)
+
+
+def _move(window: tuple[DailyBar, ...] | None) -> Decimal | None:
+    if window is None or len(window) < 2 or window[-2].close <= 0:
+        return None
+    return window[-1].close / window[-2].close - 1
+
+
+def _sample_stdev(values: Sequence[Decimal]) -> Decimal | None:
+    mean = sum(values, Decimal(0)) / Decimal(len(values))
+    variance = sum((item - mean) ** 2 for item in values) / Decimal(len(values) - 1)
+    if variance == 0:
+        return None
+    return variance.sqrt()
+
+
+def _ratio(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    if numerator < 0:
+        raise EvaluationError("capture is unusable")
+    return numerator / denominator
+
+
+def _named(observation: Observation, name: str) -> Decimal:
+    return next(value for label, value in observation.values if label == name)
+
+
+def _decimal(value: object) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise EvaluationError("capture is unusable")
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as error:
+        raise EvaluationError("capture is unusable") from error
+    if not parsed.is_finite() or parsed < 0:
+        raise EvaluationError("capture is unusable")
+    return parsed
+
+
+def _checked(session: date, item: LiquidityCapture) -> None:
+    if _SYMBOL.fullmatch(item.symbol) is None:
+        raise EvaluationError("capture is unusable")
+    if item.taker_buy_ratio is not None or item.spike_candle_count is not None:
+        raise EvaluationError("session bar and spike count stay missing")
+    close = session_close(session)
+    for moment in (
+        item.bar_captured_at,
+        item.book_observed_at,
+        item.ticker_captured_at,
+        item.market_source_timestamp,
+        item.peg_captured_at,
+    ):
+        if moment is not None:
+            _before_close(moment, close)
+    derived = derive_liquidity(
+        item.bars,
+        session,
+        binance_quote_volume=item.binance_quote_volume_24h,
+        market_cap=item.market_cap_usd,
+        aggregate_volume=item.aggregate_volume_usd,
+    )
+    if (
+        item.median_quote_volume_30d_usd != derived.median_quote_volume_30d_usd
+        or item.day_quote_volume_usd != derived.day_quote_volume_usd
+        or item.volume_zscore != derived.volume_zscore
+        or item.price_move != derived.price_move
+        or item.trade_size_stdev != derived.trade_size_stdev
+        or item.turnover != derived.turnover
+        or item.binance_volume_share != derived.binance_volume_share
+    ):
+        raise EvaluationError("capture does not match the raw observations")
+    _spread_agrees(item)
+    _peg_pair(item)
+
+
+def _spread_agrees(item: LiquidityCapture) -> None:
+    if not item.spread_bps:
+        if item.median_spread_bps is not None or item.spread_snapshots is not None:
+            raise EvaluationError("capture does not match the raw observations")
+        if item.depth_usd_per_side is not None:
+            raise EvaluationError("capture does not match the raw observations")
+        return
+    if item.median_spread_bps != _median(list(item.spread_bps)):
+        raise EvaluationError("capture does not match the raw observations")
+    if item.spread_snapshots != len(item.spread_bps):
+        raise EvaluationError("capture does not match the raw observations")
+    if item.bid_usd is None or item.ask_usd is None:
+        raise EvaluationError("capture does not match the raw observations")
+    if item.depth_usd_per_side != min(item.bid_usd, item.ask_usd):
+        raise EvaluationError("capture does not match the raw observations")
+
+
+def _peg_pair(item: LiquidityCapture) -> None:
+    deviation = item.stablecoin_peg_deviation
+    hours = item.peg_deviation_hours
+    if (deviation is None) != (hours is None):
+        raise EvaluationError("capture is unusable")
+
+
+def _before_close(moment: datetime, close: datetime) -> None:
+    if moment.tzinfo is None or moment.utcoffset() != timedelta(0):
+        raise EvaluationError("captured_at must be timezone-aware UTC")
+    if moment > close:
+        raise EvaluationError("capture is after the close")
+
+
+def _path(root: Path, session: date, symbol: str) -> Path:
+    folder = root / "captures" / f"session={session.isoformat()}" / "liquidity"
+    return folder / f"symbol={symbol}.json"
+
+
+def _body(session: date, item: LiquidityCapture) -> bytes:
+    document = {
+        "session": session.isoformat(),
+        "symbol": item.symbol,
+        "bars": [_bar(bar) for bar in item.bars],
+        "median_quote_volume_30d_usd": _text(item.median_quote_volume_30d_usd),
+        "day_quote_volume_usd": _text(item.day_quote_volume_usd),
+        "spread_bps": [_text(value) for value in item.spread_bps],
+        "median_spread_bps": _text(item.median_spread_bps),
+        "spread_snapshots": item.spread_snapshots,
+        "bid_usd": _text(item.bid_usd),
+        "ask_usd": _text(item.ask_usd),
+        "depth_usd_per_side": _text(item.depth_usd_per_side),
+        "binance_quote_volume_24h": _text(item.binance_quote_volume_24h),
+        "market_cap_usd": _text(item.market_cap_usd),
+        "aggregate_volume_usd": _text(item.aggregate_volume_usd),
+        "turnover": _text(item.turnover),
+        "volume_zscore": _text(item.volume_zscore),
+        "price_move": _text(item.price_move),
+        "taker_buy_ratio": None,
+        "spike_candle_count": None,
+        "trade_size_stdev": _text(item.trade_size_stdev),
+        "binance_volume_share": _text(item.binance_volume_share),
+        "stablecoin_peg_deviation": _text(item.stablecoin_peg_deviation),
+        "peg_deviation_hours": item.peg_deviation_hours,
+        "bar_captured_at": _iso(item.bar_captured_at),
+        "book_observed_at": _stamp(item.book_observed_at),
+        "ticker_captured_at": _stamp(item.ticker_captured_at),
+        "market_source_timestamp": _stamp(item.market_source_timestamp),
+        "peg_captured_at": _stamp(item.peg_captured_at),
+    }
+    return json.dumps(document, sort_keys=True).encode()
+
+
+def _bar(bar: DailyBar) -> dict[str, object]:
+    return {
+        "open_date": bar.open_date.isoformat(),
+        "close": format(bar.close, "f"),
+        "quote_volume": format(bar.quote_volume, "f"),
+        "trade_count": bar.trade_count,
+        "taker_buy_quote_volume": format(bar.taker_buy_quote_volume, "f"),
+    }
+
+
+def _text(value: Decimal | None) -> str | None:
+    return None if value is None else format(value, "f")
+
+
+def _stamp(moment: datetime | None) -> str | None:
+    return None if moment is None else _iso(moment)
+
+
+def _iso(moment: datetime) -> str:
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _create(path: Path, body: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() == body:
+            return
+        raise EvaluationError(f"capture {path.name} already exists with a different payload")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(body)
+    try:
+        os.link(temporary, path)
+    except FileExistsError:
+        if path.read_bytes() != body:
+            raise EvaluationError(
+                f"capture {path.name} already exists with a different payload"
+            ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
