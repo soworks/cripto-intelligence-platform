@@ -115,11 +115,13 @@ def classify_unlock(
     return "no_applicable_future_unlock"
 
 
-def unlock_schedule_known(state: UnlockState) -> bool | None:
+def unlock_schedule_known(state: str) -> bool | None:
     """Map a known schedule to true. Unavailable stays missing, not false."""
     if state == "unavailable":
         return None
-    return True
+    if state in {"future_unlocks", "no_applicable_future_unlock"}:
+        return True
+    raise EvaluationError("capture is unusable")
 
 
 def overlay_lane(
@@ -245,11 +247,10 @@ def _checked(session: date, item: LaneFields) -> None:
     close = session_close(session)
     _before_close(item.market_captured_at, close)
     _before_close(item.history_captured_at, close)
-    if item.market_source_timestamp is not None:
-        _before_close(item.market_source_timestamp, close)
+    _market_provenance(item, close)
     _history_agrees(session, item)
     _lane_scope(item)
-    _unlock_provenance(item)
+    _unlock_provenance(item, close)
 
 
 def _history_agrees(session: date, item: LaneFields) -> None:
@@ -272,9 +273,19 @@ def _lane_scope(item: LaneFields) -> None:
         raise EvaluationError("high-risk lane does not record rank or fdv")
 
 
-def _unlock_provenance(item: LaneFields) -> None:
+def _market_provenance(item: LaneFields, close: datetime) -> None:
+    valued = (item.circulating_ratio, item.market_cap_rank, item.fdv_to_market_cap)
+    stamp = item.market_source_timestamp
+    if any(value is not None for value in valued) and stamp is None:
+        raise EvaluationError("undated fundamental")
+    if stamp is not None:
+        _before_close(stamp, close)
+
+
+def _unlock_provenance(item: LaneFields, close: datetime) -> None:
+    known = unlock_schedule_known(item.unlock_state)
     named = (item.unlock_provider, item.unlock_provider_id, item.unlock_source_timestamp)
-    if item.unlock_state == "unavailable":
+    if known is None:
         if any(value is not None for value in named):
             raise EvaluationError("capture is unusable")
         return
@@ -285,6 +296,7 @@ def _unlock_provenance(item: LaneFields) -> None:
         raise EvaluationError("capture is unusable")
     if stamp is None:
         raise EvaluationError("undated fundamental")
+    _before_close(stamp, close)
 
 
 def _before_close(moment: datetime, close: datetime) -> None:

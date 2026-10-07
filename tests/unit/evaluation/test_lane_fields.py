@@ -135,6 +135,8 @@ def test_missing_unlock_rows_stay_unavailable() -> None:
     assert unlock_schedule_known("future_unlocks") is True
     assert unlock_schedule_known("no_applicable_future_unlock") is True
     with pytest.raises(EvaluationError, match="unusable"):
+        unlock_schedule_known("unlock_schedule_unknown")
+    with pytest.raises(EvaluationError, match="unusable"):
         classify_unlock((datetime(2026, 10, 9),), tracked=True, as_of=CLOSE)  # noqa: DTZ001
 
 
@@ -331,6 +333,37 @@ def test_malformed_lane_inputs_stay_unusable(tmp_path: Path) -> None:
             unlock_source_timestamp=None,
         ),
         _lane(market_captured_at=datetime(2026, 10, 7, 14, 30)),  # noqa: DTZ001
+        _lane(market_source_timestamp=None),
+        _lane(
+            lane=Lane.HIGH_RISK,
+            market_cap_rank=None,
+            fdv_to_market_cap=None,
+            circulating_ratio=None,
+            unlock_state="future_unlocks",
+            unlock_provider="manual",
+            unlock_provider_id="solana",
+            unlock_source_timestamp=datetime(2026, 10, 7, 14, 30),  # noqa: DTZ001
+        ),
+        _lane(
+            lane=Lane.HIGH_RISK,
+            market_cap_rank=None,
+            fdv_to_market_cap=None,
+            circulating_ratio=None,
+            unlock_state="future_unlocks",
+            unlock_provider="manual",
+            unlock_provider_id="solana",
+            unlock_source_timestamp=datetime(2026, 10, 8, 0, 0, 1, tzinfo=UTC),
+        ),
+        _lane(
+            lane=Lane.HIGH_RISK,
+            market_cap_rank=None,
+            fdv_to_market_cap=None,
+            circulating_ratio=None,
+            unlock_state="unlock_schedule_unknown",
+            unlock_provider="manual",
+            unlock_provider_id="solana",
+            unlock_source_timestamp=STAMP,
+        ),
     )
     for item in blocked:
         with pytest.raises(EvaluationError):
