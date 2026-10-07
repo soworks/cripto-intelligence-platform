@@ -24,6 +24,8 @@ The session daily bar, open date 2026-10-07, has not closed. It is not an input.
 
 The retained CoinGecko body is the 14:21:30Z `/coins/markets` response already stored for the lane-field slice. It is not requested again. `total_volume` and `market_cap` are read from it. Binance 24h volume is not in that body, so the ticker is a new pre-close retrieval.
 
+A stored daily bar has to cover one UTC day, and its open date has to be before the session. The retrieval time has to be at or after that bar's close. A filled book, ticker, market-cap pair, or peg keeps the clock that dates it. A peg stores the closed hourly prices it was read from, and the stored deviation and hour count have to match that reading. No closed hour leaves the peg missing.
+
 ## What this does not do
 
 Eligibility thresholds and the liquidity thresholds stay as they are. Session 2026-10-06 is not written. The 2026-10-07 classification and lane documents are not rewritten. Fundamentals, the score, and a production schedule are not added. `run_daily_scan` is not called. No shadow clock is written.

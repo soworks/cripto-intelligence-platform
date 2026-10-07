@@ -6,6 +6,7 @@ A short sample stays missing. The session bar and the spike count are not filled
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -28,6 +29,7 @@ _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}$")
 _SEALED = date(2026, 10, 6)
 _VOLUME_DAYS = 30
 _BASELINE_DAYS = 30
+_DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
 
 
@@ -83,6 +85,8 @@ class LiquidityCapture:
     binance_volume_share: Decimal | None
     stablecoin_peg_deviation: Decimal | None
     peg_deviation_hours: int | None
+    hourly_closes: tuple[Decimal, ...]
+    peg_limit: Decimal | None
     bar_captured_at: datetime
     book_observed_at: datetime | None
     ticker_captured_at: datetime | None
@@ -106,7 +110,7 @@ def parse_daily_klines(payload: object, *, symbol: str) -> tuple[DailyBar, ...]:
             raise EvaluationError("capture is unusable")
         taker_base = _decimal(raw[9])
         taker_quote = _decimal(raw[10])
-        opened = datetime.fromtimestamp(row.open_time / 1000, UTC).date()
+        opened = _utc_day(row.open_time, row.close_time)
         bars.append(
             DailyBar(
                 symbol=symbol,
@@ -207,15 +211,24 @@ def closed_hour_closes(payload: object, *, captured_at: datetime) -> tuple[Decim
     if not isinstance(payload, list):
         raise EvaluationError("capture is unusable")
     closes: list[Decimal] = []
+    opened_at: list[int] = []
     for row in payload:
         if not isinstance(row, list) or len(row) < 7:
             raise EvaluationError("capture is unusable")
+        open_time = row[0]
         close_time = row[6]
-        if type(close_time) is not int:
+        if type(open_time) is not int or type(close_time) is not int:
             raise EvaluationError("capture is unusable")
-        if datetime.fromtimestamp((close_time + 1) / 1000, UTC) > captured_at:
+        if open_time % _HOUR_MS != 0 or close_time != open_time + _HOUR_MS - 1:
+            raise EvaluationError("capture is unusable")
+        finished = _instant((close_time + 1) / 1000)
+        if finished > captured_at:
             continue
         closes.append(_decimal(row[4]))
+        opened_at.append(open_time)
+    for earlier, later in itertools.pairwise(opened_at):
+        if later - earlier != _HOUR_MS:
+            raise EvaluationError("capture is unusable")
     return tuple(closes)
 
 
@@ -296,6 +309,19 @@ def _named(observation: Observation, name: str) -> Decimal:
     return next(value for label, value in observation.values if label == name)
 
 
+def _utc_day(open_time: int, close_time: int) -> date:
+    if open_time % _DAY_MS != 0 or close_time != open_time + _DAY_MS - 1:
+        raise EvaluationError("capture is unusable")
+    return _instant(open_time / 1000).date()
+
+
+def _instant(seconds: float) -> datetime:
+    try:
+        return datetime.fromtimestamp(seconds, UTC)
+    except (ValueError, OverflowError, OSError) as error:
+        raise EvaluationError("capture is unusable") from error
+
+
 def _decimal(value: object) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, str):
         raise EvaluationError("capture is unusable")
@@ -314,15 +340,18 @@ def _checked(session: date, item: LiquidityCapture) -> None:
     if item.taker_buy_ratio is not None or item.spike_candle_count is not None:
         raise EvaluationError("session bar and spike count stay missing")
     close = session_close(session)
-    for moment in (
-        item.bar_captured_at,
-        item.book_observed_at,
-        item.ticker_captured_at,
-        item.market_source_timestamp,
-        item.peg_captured_at,
-    ):
-        if moment is not None:
-            _before_close(moment, close)
+    _completed_days(session, item, close)
+    _require_clock(_book_present(item), item.book_observed_at, close)
+    _require_clock(item.binance_quote_volume_24h is not None, item.ticker_captured_at, close)
+    market_present = item.market_cap_usd is not None or item.aggregate_volume_usd is not None
+    _require_clock(market_present, item.market_source_timestamp, close)
+    peg_present = (
+        item.stablecoin_peg_deviation is not None
+        or item.peg_deviation_hours is not None
+        or bool(item.hourly_closes)
+        or item.peg_limit is not None
+    )
+    _require_clock(peg_present, item.peg_captured_at, close)
     derived = derive_liquidity(
         item.bars,
         session,
@@ -361,11 +390,57 @@ def _spread_agrees(item: LiquidityCapture) -> None:
         raise EvaluationError("capture does not match the raw observations")
 
 
+def _completed_days(session: date, item: LiquidityCapture, close: datetime) -> None:
+    _before_close(item.bar_captured_at, close)
+    for bar in item.bars:
+        if bar.open_date > session:
+            raise EvaluationError("capture is after the close")
+        if bar.open_date == session:
+            raise EvaluationError("session bar was retrieved before it closed")
+    if not item.bars:
+        return
+    period_end = session_close(max(bar.open_date for bar in item.bars))
+    if item.bar_captured_at < period_end:
+        raise EvaluationError("bar was retrieved before it closed")
+
+
+def _book_present(item: LiquidityCapture) -> bool:
+    if item.spread_bps:
+        return True
+    return any(
+        value is not None
+        for value in (
+            item.median_spread_bps,
+            item.spread_snapshots,
+            item.bid_usd,
+            item.ask_usd,
+            item.depth_usd_per_side,
+        )
+    )
+
+
+def _require_clock(present: bool, moment: datetime | None, close: datetime) -> None:
+    if present and moment is None:
+        raise EvaluationError("undated observation")
+    if moment is not None:
+        _before_close(moment, close)
+
+
 def _peg_pair(item: LiquidityCapture) -> None:
     deviation = item.stablecoin_peg_deviation
     hours = item.peg_deviation_hours
     if (deviation is None) != (hours is None):
         raise EvaluationError("capture is unusable")
+    if deviation is None:
+        if item.hourly_closes or item.peg_limit is not None:
+            raise EvaluationError("capture is unusable")
+        return
+    if not item.hourly_closes or item.peg_limit is None:
+        raise EvaluationError("capture is unusable")
+    if not item.peg_limit.is_finite() or item.peg_limit < 0:
+        raise EvaluationError("capture is unusable")
+    if peg_reading(item.hourly_closes, limit=item.peg_limit) != (deviation, hours):
+        raise EvaluationError("capture does not match the raw observations")
 
 
 def _before_close(moment: datetime, close: datetime) -> None:
@@ -405,6 +480,8 @@ def _body(session: date, item: LiquidityCapture) -> bytes:
         "binance_volume_share": _text(item.binance_volume_share),
         "stablecoin_peg_deviation": _text(item.stablecoin_peg_deviation),
         "peg_deviation_hours": item.peg_deviation_hours,
+        "hourly_closes": [format(value, "f") for value in item.hourly_closes],
+        "peg_limit": _text(item.peg_limit),
         "bar_captured_at": _iso(item.bar_captured_at),
         "book_observed_at": _stamp(item.book_observed_at),
         "ticker_captured_at": _stamp(item.ticker_captured_at),
