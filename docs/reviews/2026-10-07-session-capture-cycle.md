@@ -63,4 +63,4 @@ That controlled run did not finalize, because the candidate packet for the close
 
 ## Suite
 
-`uv run pytest --cov --cov-report=term-missing`: 961 passed, 9 deselected, 100% branch coverage.
+`uv run pytest --cov --cov-report=term-missing`: 962 passed, 9 deselected, 100% branch coverage.
