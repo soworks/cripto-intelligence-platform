@@ -92,6 +92,13 @@ def test_a_flat_baseline_and_a_zero_trade_count_stay_missing() -> None:
     quiet[-1] = _bar(END, "130", trades=0)
     assert derive_liquidity(tuple(quiet), SESSION).trade_size_stdev is None
     assert derive_liquidity(tuple(quiet), SESSION).volume_zscore is not None
+    small = list(_series(31))
+    small[-1] = _bar(END, "1")
+    below = derive_liquidity(tuple(small), SESSION)
+    assert below.trade_size_stdev is not None
+    assert below.trade_size_stdev > 0
+    assert below.volume_zscore is not None
+    assert below.volume_zscore < 0
 
 
 def test_one_book_is_one_snapshot_and_an_empty_book_is_missing() -> None:
