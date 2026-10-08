@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from cip.domain.errors import EvaluationError, RecorderError
+from cip.evaluation import classification_bundle
 from cip.evaluation.classification_bundle import ensure_bundle, load_component, store_component
 from cip.evaluation.classification_producer import (
     CatalogIncomplete,
@@ -88,7 +89,8 @@ def test_invocations_complete_independent_sources_then_publish_once(tmp_path: Pa
     assert not any("tickers" in url or "eur-stablecoin" in url for url in calls)
     assert any("ids=" in url for url in calls)
     again = ensure_bundle(tmp_path, OPEN, NOW, PAIRS, get)
-    assert [item.symbol for item in again] == ["BTCUSDT", "ETHUSDT"] if again else []
+    assert again is not None
+    assert [item.symbol for item in again] == ["BTCUSDT", "ETHUSDT"]
     assert calls == [url for url in calls if "ids=" in url]
 
 
@@ -238,3 +240,37 @@ def test_an_unknown_source_and_a_short_market_catalog_fail(tmp_path: Path) -> No
         classify_stored(PAIRS, {"tickers": [], "eur": [], "markets": {}})
     with pytest.raises(EvaluationError, match="unusable"):
         classify_stored(PAIRS, {"tickers": [], "eur": [], "markets": [], "marketing": {}})
+    with pytest.raises(CatalogIncomplete):
+        fetch_component(
+            "markets",
+            lambda _url: [{"id": "other", "last_updated": "2026-10-08T16:00:00Z", "market_cap": 1}],
+            PAIRS,
+            {"tickers": [_TICKER]},
+        )
+    path = tmp_path / "captures/session=2026-10-08/classification_sources/coins.json"
+    document = json.loads(path.read_text())
+    document["provenance"] = "other"
+    path.write_text(json.dumps(document))
+    with pytest.raises(EvaluationError, match="unusable"):
+        load_component(tmp_path, OPEN, "coins")
+
+
+def test_a_racing_writer_cannot_replace_a_finished_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def occupy(source: str, destination: str) -> None:
+        del source
+        Path(destination).write_bytes(b"other")
+        raise FileExistsError
+
+    monkeypatch.setattr(classification_bundle.os, "link", occupy)
+    with pytest.raises(EvaluationError, match="conflicting observation"):
+        store_component(tmp_path, OPEN, "eur", [{"id": "eurite"}], NOW)
+
+    def same(source: str, destination: str) -> None:
+        Path(destination).write_bytes(Path(source).read_bytes())
+        raise FileExistsError
+
+    monkeypatch.setattr(classification_bundle.os, "link", same)
+    stored = store_component(tmp_path, OPEN, "assets", {"data": []}, NOW)
+    assert stored == {"data": []}

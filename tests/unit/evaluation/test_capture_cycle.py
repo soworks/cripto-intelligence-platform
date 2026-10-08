@@ -290,6 +290,20 @@ def test_a_universe_file_without_symbols_is_unusable(tmp_path: Path) -> None:
         run_capture_cycle(tmp_path, NOW, Source(_pre_answers(OPEN, NOW)), ("BTCUSDT",))
 
 
+def test_a_conflicting_classification_source_still_stores_the_book(tmp_path: Path) -> None:
+    class Conflict(Source):
+        def fetch(self, session: date, kind: str, symbol: str | None) -> object:
+            if kind == "classification":
+                self.calls.append((kind, symbol, session))
+                raise EvaluationError("conflicting observation")
+            return super().fetch(session, kind, symbol)
+
+    source = Conflict(_pre_answers(OPEN, NOW))
+    with pytest.raises(EvaluationError, match="conflicting observation"):
+        run_capture_cycle(tmp_path, NOW, source, ("BTCUSDT",))
+    assert book_is_stored(tmp_path, OPEN, "BTCUSDT")
+
+
 def test_one_incomplete_catalog_does_not_block_the_book(tmp_path: Path) -> None:
     info = ExchangeInfo.model_validate(
         {

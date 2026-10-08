@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -68,6 +69,8 @@ def load_component(root: Path, session: date, name: str) -> object | None:
         raise EvaluationError("classification source is unusable")
     if document.get("session") != session.isoformat() or document.get("component") != name:
         raise EvaluationError("classification source is outside the session")
+    if document.get("provenance") != _SOURCES.get(name):
+        raise EvaluationError("classification source is unusable")
     if document.get("complete") is not True:
         raise EvaluationError("classification source is incomplete")
     payload = document.get("payload")
@@ -104,7 +107,15 @@ def store_component(
         if path.read_bytes() == body:
             return payload
         raise EvaluationError("conflicting observation")
-    path.write_bytes(body)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_bytes(body)
+    try:
+        os.link(temporary, path)
+    except FileExistsError:
+        if path.read_bytes() != body:
+            raise EvaluationError("conflicting observation") from None
+    finally:
+        temporary.unlink(missing_ok=True)
     return payload
 
 

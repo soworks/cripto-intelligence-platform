@@ -113,6 +113,13 @@ def fetch_component(
             if not isinstance(payload, list):
                 raise CatalogIncomplete("classification catalog is incomplete")
             found.extend(payload)
+        returned = {
+            row.get("id")
+            for row in found
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        if any(asset_id not in returned for asset_id in wanted):
+            raise CatalogIncomplete("classification catalog is incomplete")
         return found
     raise EvaluationError("classification source is unknown")
 
