@@ -14,6 +14,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from time import sleep as _sleep
 from typing import Any, Protocol, cast
 
 import boto3
@@ -42,6 +43,11 @@ from cip.recorders.sources import (
 )
 
 logger = Logger(service="cip-session-capture")
+
+
+def _pause(seconds: float) -> None:
+    _sleep(seconds)
+
 
 _SEALED = date(2026, 10, 6)
 _TRADING = re.compile(r"^[A-Z0-9]{1,20}$")
@@ -166,7 +172,20 @@ class EvidenceSource:
 
     def _get(self, url: str) -> object:
         self.calls.append(f"GET {url}")
-        return self._reader(url, None)
+        if "coingecko.com" in url:
+            _pause(2.0)
+        last = RecorderError("status 429")
+        for attempt in range(4):
+            try:
+                return self._reader(url, None)
+            except RecorderError as error:
+                last = error
+                if str(error) != "status 429":
+                    raise
+                if attempt < 3:
+                    _pause(5.0 * (attempt + 1))
+        self._catalog_unavailable = True
+        raise last
 
     def _peg(self, session: date) -> tuple[tuple[Decimal, ...], datetime, datetime]:
         self.calls.append("GET /api/v3/klines USDCUSDT 1h")
