@@ -555,6 +555,41 @@ def test_catalog_budget_uses_the_lambda_clock() -> None:
     assert session_capture._catalog_delay(3, "10") is None
 
 
+def test_a_throttled_later_source_keeps_the_ticker_artifact_and_the_book(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if url.endswith("/global"):
+            return {"data": {"market_cap_percentage": {"btc": "54.2"}, "updated_at": 1_759_000_000}}
+        if "stablecoincharts" in url:
+            return [{"date": 1_759_000_000, "totalCirculatingUSD": {"peggedUSD": "10"}}]
+        if "eur-stablecoin" in url:
+            raise RateLimited("60")
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    with mock_aws():
+        client = _bucket(monkeypatch)
+        source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
+        first = session_capture.capture(
+            {}, _Context(), now=NOW, source=source, client=client, root=tmp_path
+        )
+        ticker = "captures/session=2026-10-07/classification_sources/tickers.json"
+        assert ticker in first["written"]
+        assert not any("/classification/symbol=" in key for key in first["written"])
+        assert "classification:BTCUSDT" in first["retries"]
+        assert "captures/session=2026-10-07/book/symbol=BTCUSDT.json" in first["written"]
+        resumed = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
+        second = session_capture.capture(
+            {}, _Context(), now=NOW, source=resumed, client=client, root=tmp_path
+        )
+        assert not any("tickers?page=" in call for call in second["provider_calls"])
+        assert "classification:BTCUSDT" in second["retries"]
+
+
 def test_a_coingecko_429_is_retried_before_the_catalog_is_abandoned() -> None:
     calls = {"n": 0}
 

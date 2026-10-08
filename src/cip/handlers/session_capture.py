@@ -34,6 +34,7 @@ from cip.domain.errors import (
 from cip.domain.policy import load_policy
 from cip.evaluation.capture_cycle import BookShot, CycleReport, TemporaryFailure, run_capture_cycle
 from cip.evaluation.classification import SymbolClassification
+from cip.evaluation.classification_bundle import ensure_bundle
 from cip.evaluation.classification_producer import CatalogIncomplete, produce_classifications
 from cip.evaluation.liquidity_capture import HourQuote, book_metrics, parse_daily_klines
 from cip.evaluation.populate import BLOCKED_THROUGH, RegimeCapture
@@ -139,7 +140,12 @@ class EvidenceSource:
         self._info: ExchangeInfo | None = None
         self._rows: dict[str, SymbolClassification] | None = None
         self._pages: dict[str, object] = {}
+        self._root: Path | None = None
         self._catalog_unavailable = False
+
+    def bind_store(self, root: Path) -> None:
+        """Remember the session store so a finished source survives this process."""
+        self._root = root
 
     def fetch(self, session: date, kind: str, symbol: str | None) -> object:
         """One observation. A temporary failure is raised with nothing stored."""
@@ -166,7 +172,7 @@ class EvidenceSource:
             self._info = self._spot.exchange_info()
             return universe_capture(session, self._info, self.now, self.now)
         if kind == "classification":
-            return self._classification(symbol)
+            return self._classification(session, symbol)
         if kind == "ticker":
             self.calls.append("GET /api/v3/ticker/24hr")
             rows = [
@@ -184,7 +190,9 @@ class EvidenceSource:
             return self._named(session, kind, _trading_symbol(symbol))
         raise TemporaryFailure("capture kind is not collected")
 
-    def _classification(self, symbol: str | None) -> tuple[SymbolClassification, datetime]:
+    def _classification(
+        self, session: date, symbol: str | None
+    ) -> tuple[SymbolClassification, datetime]:
         if symbol is None or _TRADING.fullmatch(symbol) is None:
             raise EvaluationError("capture symbol is unusable")
         if self._catalog_unavailable:
@@ -196,15 +204,25 @@ class EvidenceSource:
                 if item.quote_asset == "USDT" and item.base_asset != ""
             ]
             try:
-                produced = produce_classifications(pairs, self._get)
+                produced = self._produce(session, pairs)
             except CatalogIncomplete:
                 self._catalog_unavailable = True
                 raise
+            if produced is None:
+                self._catalog_unavailable = True
+                raise TemporaryFailure("classification catalog is incomplete")
             self._rows = {item.symbol: item for item in produced}
         found = self._rows.get(symbol)
         if found is None:
             raise TemporaryFailure("classification base is unresolved")
         return found, self.now
+
+    def _produce(
+        self, session: date, pairs: list[tuple[str, str]]
+    ) -> tuple[SymbolClassification, ...] | None:
+        if self._root is None:
+            return produce_classifications(pairs, self._get)
+        return ensure_bundle(self._root, session, self.now, pairs, self._get)
 
     def _exchange_info(self) -> ExchangeInfo:
         if self._info is None:

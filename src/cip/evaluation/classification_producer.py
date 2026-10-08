@@ -79,6 +79,75 @@ def _pages(get: _Reader, url: str, key: str | None, page_size: int) -> list[obje
     raise CatalogIncomplete("classification catalog is incomplete")
 
 
+def fetch_component(
+    name: str,
+    get: _Reader,
+    pairs: Sequence[tuple[str, str]],
+    prior: dict[str, object],
+) -> object:
+    """One complete source. A short page is stored only with the finished catalog."""
+    if name == "tickers":
+        return _pages(get, _TICKERS, "tickers", 100)
+    if name == "assets":
+        return get(_ASSET)
+    if name == "coins":
+        return get(_COINS)
+    if name == "eur":
+        return _pages(get, _EUR, None, 250)
+    if name == "marketing":
+        payload = get(_MARKETING)
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise EvaluationError("capture is unusable")
+        return payload
+    if name == "markets":
+        tickers = prior.get("tickers")
+        if not isinstance(tickers, list):
+            raise CatalogIncomplete("classification catalog is incomplete")
+        mapping = map_binance_tickers(tickers)
+        wanted = sorted({mapping.ids[symbol] for symbol, _base in pairs if symbol in mapping.ids})
+        found: list[object] = []
+        for start in range(0, len(wanted), 200):
+            chunk = wanted[start : start + 200]
+            payload = get(_MARKETS + ",".join(chunk))
+            if not isinstance(payload, list):
+                raise CatalogIncomplete("classification catalog is incomplete")
+            found.extend(payload)
+        return found
+    raise EvaluationError("classification source is unknown")
+
+
+def classify_stored(
+    pairs: Sequence[tuple[str, str]], sources: dict[str, object]
+) -> tuple[SymbolClassification, ...]:
+    """Join a complete stored bundle. This does not fetch."""
+    tickers = sources.get("tickers")
+    eur_rows = sources.get("eur")
+    marketing = sources.get("marketing")
+    markets = sources.get("markets")
+    if not isinstance(tickers, list) or not isinstance(eur_rows, list):
+        raise EvaluationError("classification source is incomplete")
+    if not isinstance(markets, list):
+        raise EvaluationError("classification source is incomplete")
+    rows = marketing.get("data") if isinstance(marketing, dict) else None
+    if not isinstance(rows, list):
+        raise EvaluationError("capture is unusable")
+    mapping = map_binance_tickers(tickers)
+    eur_ids = frozenset(
+        row["id"] for row in eur_rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+    )
+    return classify_universe(
+        pairs,
+        assets=parse_asset_catalog(sources.get("assets")),
+        coins=parse_coin_config(sources.get("coins")),
+        mapping=mapping,
+        eur_ids=eur_ids,
+        caps=parse_coingecko_markets(markets),
+        cmc=map_cmc_ids(rows),
+        cmc_caps={},
+    )
+
+
 def _caps(get: _Reader, asset_ids: Sequence[str]) -> dict[str, CapReading]:
     found: dict[str, CapReading] = {}
     for start in range(0, len(asset_ids), 200):

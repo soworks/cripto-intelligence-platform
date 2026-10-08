@@ -152,6 +152,9 @@ def run_capture_cycle(
     git_sha: str = "0" * 40,
 ) -> CycleReport:
     """Capture the open session, then the session that just closed."""
+    bind = getattr(source, "bind_store", None)
+    if callable(bind):
+        bind(root)
     cycle = capture_cycle(now, requested)
     calls: list[tuple[str, str | None]] = []
     skipped: list[str] = []
