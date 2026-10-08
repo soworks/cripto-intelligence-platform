@@ -29,6 +29,13 @@ def _no_catalog_pause(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_capture, "_sleep", lambda _seconds: None)
 
 
+def test_pause_delegates_to_the_sleeper(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[float] = []
+    monkeypatch.setattr(session_capture, "_sleep", seen.append)
+    session_capture._pause(0)
+    assert seen == [0]
+
+
 OPEN = date(2026, 10, 7)
 NOW = datetime(2026, 10, 7, 19, tzinfo=UTC)
 AFTER = datetime(2026, 10, 8, 1, tzinfo=UTC)
@@ -454,7 +461,9 @@ def _full_ticker_page() -> dict[str, object]:
     }
 
 
-def test_retry_after_then_a_longer_fallback_finishes_one_catalog() -> None:
+def test_retry_after_then_a_longer_fallback_finishes_one_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     waits: list[float] = []
     pages: dict[str, int] = {}
 
@@ -476,17 +485,8 @@ def test_retry_after_then_a_longer_fallback_finishes_one_catalog() -> None:
         raise AssertionError(url)
 
     source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
-    original = session_capture._pause
-
-    def record(seconds: float) -> None:
-        waits.append(seconds)
-        original(seconds)
-
-    session_capture._pause = record
-    try:
-        item, _captured = source.fetch(OPEN, "classification", "BTCUSDT")
-    finally:
-        session_capture._pause = original
+    monkeypatch.setattr(session_capture, "_pause", waits.append)
+    item, _captured = source.fetch(OPEN, "classification", "BTCUSDT")
     assert item.symbol == "BTCUSDT"
     assert pages["https://api.coingecko.com/api/v3/exchanges/binance/tickers?page=6"] == 3
     assert all(count == 1 for page, count in pages.items() if not page.endswith("=6"))
