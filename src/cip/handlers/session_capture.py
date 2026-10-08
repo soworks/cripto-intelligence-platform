@@ -1,8 +1,8 @@
 """Production evidence capture for the open UTC session.
 
 This workload stores pre-close and post-close observations. It does not scan,
-place orders, or record a production clock. Classification stays caller-supplied:
-this handler does not invent a provider and does not write an absence.
+place orders, or record a production clock. A missing classification is left
+unstored; this handler does not write an absence.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from cip.adapters.market import Depth, ExchangeInfo, Kline, Ticker24h, parse_kli
 from cip.domain.errors import EvaluationError, ExchangeBannedError, MarketDataError, RecorderError
 from cip.domain.policy import load_policy
 from cip.evaluation.capture_cycle import BookShot, CycleReport, TemporaryFailure, run_capture_cycle
+from cip.evaluation.classification import SymbolClassification
+from cip.evaluation.classification_producer import CatalogIncomplete, produce_classifications
 from cip.evaluation.liquidity_capture import HourQuote, book_metrics, parse_daily_klines
 from cip.evaluation.populate import BLOCKED_THROUGH, RegimeCapture
 from cip.evaluation.prospect import universe_capture
@@ -46,7 +48,7 @@ _TRADING = re.compile(r"^[A-Z0-9]{1,20}$")
 _DEPTH_LIMIT = 100
 _PEG_LIMIT = 30
 _DAILY_LIMIT = 40
-_OPEN_KINDS = frozenset({"universe", "ticker", "peg", "regime", "book"})
+_OPEN_KINDS = frozenset({"universe", "ticker", "peg", "regime", "book", "classification"})
 _BAR_KINDS = frozenset({"book", "daily_bars", "hour_bars"})
 
 
@@ -87,17 +89,19 @@ class EvidenceSource:
         self._base = base_url.rstrip("/")
         self._reader = reader
         self.calls: list[str] = []
+        self._info: ExchangeInfo | None = None
+        self._rows: dict[str, SymbolClassification] | None = None
 
     def fetch(self, session: date, kind: str, symbol: str | None) -> object:
         """One observation. A temporary failure is raised with nothing stored."""
-        if kind == "classification":
-            raise TemporaryFailure("classification is caller-supplied")
         if kind in _OPEN_KINDS and self.now >= session_close(session):
             raise TemporaryFailure("capture is after the close")
         try:
             return self._read(session, kind, symbol)
         except TemporaryFailure:
             raise
+        except CatalogIncomplete as error:
+            raise TemporaryFailure("classification catalog is incomplete") from error
         except ExchangeBannedError:
             raise
         except RecorderError as error:
@@ -110,7 +114,10 @@ class EvidenceSource:
     def _read(self, session: date, kind: str, symbol: str | None) -> object:
         if kind == "universe":
             self.calls.append("GET /api/v3/exchangeInfo")
-            return universe_capture(session, self._spot.exchange_info(), self.now, self.now)
+            self._info = self._spot.exchange_info()
+            return universe_capture(session, self._info, self.now, self.now)
+        if kind == "classification":
+            return self._classification(symbol)
         if kind == "ticker":
             self.calls.append("GET /api/v3/ticker/24hr")
             rows = [
@@ -127,6 +134,31 @@ class EvidenceSource:
         if kind in _BAR_KINDS:
             return self._named(session, kind, _trading_symbol(symbol))
         raise TemporaryFailure("capture kind is not collected")
+
+    def _classification(self, symbol: str | None) -> tuple[SymbolClassification, datetime]:
+        if symbol is None or _TRADING.fullmatch(symbol) is None:
+            raise EvaluationError("capture symbol is unusable")
+        if self._rows is None:
+            pairs = [
+                (item.symbol, item.base_asset)
+                for item in self._exchange_info().symbols
+                if item.quote_asset == "USDT" and item.base_asset != ""
+            ]
+            self._rows = {item.symbol: item for item in produce_classifications(pairs, self._get)}
+        found = self._rows.get(symbol)
+        if found is None:
+            raise TemporaryFailure("classification base is unresolved")
+        return found, self.now
+
+    def _exchange_info(self) -> ExchangeInfo:
+        if self._info is None:
+            self.calls.append("GET /api/v3/exchangeInfo")
+            self._info = self._spot.exchange_info()
+        return self._info
+
+    def _get(self, url: str) -> object:
+        self.calls.append(f"GET {url}")
+        return self._reader(url, None)
 
     def _peg(self, session: date) -> tuple[tuple[Decimal, ...], datetime, datetime]:
         self.calls.append("GET /api/v3/klines USDCUSDT 1h")

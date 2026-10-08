@@ -282,6 +282,70 @@ def test_a_different_second_book_is_a_conflict_and_the_first_remains(tmp_path: P
         store_session_book(tmp_path, OPEN, "ETHUSDT", original)
 
 
+def test_a_universe_file_without_symbols_is_unusable(tmp_path: Path) -> None:
+    path = tmp_path / "captures/session=2026-10-07/universe.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    with pytest.raises(EvaluationError, match="capture is unusable"):
+        run_capture_cycle(tmp_path, NOW, Source(_pre_answers(OPEN, NOW)), ("BTCUSDT",))
+
+
+def test_classification_follows_the_stored_universe(tmp_path: Path) -> None:
+    info = ExchangeInfo.model_validate(
+        {
+            "symbols": [
+                {
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "symbol": "BTCUSDT",
+                },
+                {
+                    "baseAsset": "ETH",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "symbol": "ETHUSDT",
+                },
+            ]
+        }
+    )
+    answers = _pre_answers(OPEN, NOW)
+    answers[(OPEN, "universe", None)] = universe_capture(OPEN, info, NOW, NOW)
+    eth, captured = _classification(NOW)
+    answers[(OPEN, "classification", "ETHUSDT")] = (
+        SymbolClassification(
+            symbol="ETHUSDT",
+            base_asset="ETH",
+            eur_stable=eth.eur_stable,
+            fan_token=eth.fan_token,
+            monitoring_tag=eth.monitoring_tag,
+            delisting=eth.delisting,
+            deposits_suspended=eth.deposits_suspended,
+            withdrawals_suspended=eth.withdrawals_suspended,
+            pending_migration=eth.pending_migration,
+            coin_id=eth.coin_id,
+            mapping=eth.mapping,
+            market_cap_usd=eth.market_cap_usd,
+            market_cap_source_timestamp=captured,
+            cmc_id=None,
+            cmc_market_cap_usd=None,
+            cmc_source_timestamp=None,
+        ),
+        captured,
+    )
+    source = Source(answers)
+    report = run_capture_cycle(tmp_path, NOW, source, ("BTCUSDT",))
+    folder = tmp_path / "captures/session=2026-10-07"
+    assert (folder / "classification/symbol=BTCUSDT.json").is_file()
+    assert (folder / "classification/symbol=ETHUSDT.json").is_file()
+    assert not (folder / "book/symbol=ETHUSDT.json").exists()
+    assert ("classification", "ETHUSDT") in report.calls
+    again = Source(answers)
+    second = run_capture_cycle(tmp_path, NOW, again, ("BTCUSDT",))
+    assert ("classification", "ETHUSDT") not in second.calls
+    assert "classification:ETHUSDT" in second.skipped
+
+
 def test_an_existing_liquidity_snapshot_is_not_fetched_again(tmp_path: Path) -> None:
     path = tmp_path / "captures/session=2026-10-07/liquidity/symbol=BTCUSDT.json"
     path.parent.mkdir(parents=True)

@@ -117,6 +117,9 @@ def _source(spot: _Spot | None = None, *, now: datetime = NOW) -> tuple[Evidence
             return [{"date": 1_759_000_000, "totalCirculatingUSD": {"peggedUSD": "10"}}]
         if params_of(url):
             return []
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
         raise AssertionError(url)
 
     return (
@@ -127,6 +130,45 @@ def _source(spot: _Spot | None = None, *, now: datetime = NOW) -> tuple[Evidence
 
 def params_of(url: str) -> bool:
     return url.endswith("/klines")
+
+
+def _catalog(url: str) -> object | None:
+    if url.endswith("get-all-asset"):
+        return {
+            "data": [
+                {
+                    "assetCode": "BTC",
+                    "delisted": False,
+                    "preDelist": False,
+                    "swapTag": "no",
+                    "tags": ["fan_token"],
+                }
+            ],
+            "success": True,
+        }
+    if url.endswith("getNetworkCoinAll"):
+        return {
+            "data": [{"coin": "BTC", "depositAllEnable": True, "withdrawAllEnable": False}],
+            "success": True,
+        }
+    if "exchanges/binance/tickers" in url:
+        return {
+            "tickers": [
+                {
+                    "base": "BTC",
+                    "coin_id": "bitcoin",
+                    "market": {"identifier": "binance"},
+                    "target": "USDT",
+                }
+            ]
+        }
+    if "category=eur-stablecoin" in url:
+        return [{"id": "eurite"}]
+    if "ids=" in url:
+        return [{"id": "bitcoin", "last_updated": "2026-10-07T18:00:00Z", "market_cap": 1}]
+    if url.endswith("symbol/list"):
+        return {"data": [{"cmcUniqueId": 1, "symbol": "BTCUSDT"}]}
+    return None
 
 
 def _bucket(monkeypatch: pytest.MonkeyPatch) -> object:
@@ -162,10 +204,11 @@ def test_pre_close_stores_one_book_and_the_retry_does_not_take_another(
         assert first["post_close"] is None
         assert first["finalized"] is False
         assert first["ready"] is None
-        assert "classification:BTCUSDT" in first["retries"]
+        assert "classification:BTCUSDT" not in first["retries"]
         assert book in first["written"]
+        assert "captures/session=2026-10-07/classification/symbol=BTCUSDT.json" in first["written"]
         assert "GET /api/v3/depth BTCUSDT" in first["provider_calls"]
-        assert not any("classification" in call for call in first["provider_calls"])
+        assert any("get-all-asset" in call for call in first["provider_calls"])
         stored = json.loads(client.get_object(Bucket=BUCKET, Key=book)["Body"].read())
         assert stored["spread_snapshots"] == 1
         assert len(stored["spread_bps"]) == 1
@@ -182,9 +225,10 @@ def test_pre_close_stores_one_book_and_the_retry_does_not_take_another(
         assert second_spot.depth_calls == 0
         assert second_spot.info_calls == 0
         assert "book:BTCUSDT" in second["skipped"]
+        assert "classification:BTCUSDT" in second["skipped"]
+        assert second["provider_calls"] == []
         assert book in second["unchanged"]
         assert book not in second["written"]
-        assert "classification:BTCUSDT" in second["retries"]
         names = [item["Key"] for item in client.list_objects_v2(Bucket=BUCKET)["Contents"]]
         assert names.count(book) == 1
         assert not any("absences/" in name for name in names)
@@ -235,6 +279,9 @@ def test_post_close_keeps_an_incomplete_hour_grid_unstored(
                 return {
                     "data": {"market_cap_percentage": {"btc": "54.2"}, "updated_at": 1_759_000_000}
                 }
+            catalog = _catalog(url)
+            if catalog is not None:
+                return catalog
             return [{"date": 1_759_000_000, "totalCirculatingUSD": {"peggedUSD": "10"}}]
 
         source = EvidenceSource(_Spot(), AFTER, Decimal("0.02"), BASE, reader)
@@ -384,14 +431,47 @@ def test_public_reader_uses_the_policy_host(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen[-1] == "closed"
 
 
-def test_classification_and_a_late_ticker_make_no_provider_call() -> None:
-    source, _market = _source()
-    with pytest.raises(TemporaryFailure, match="caller-supplied"):
+def test_classification_retries_an_incomplete_catalog_and_an_unknown_base() -> None:
+    full = {
+        "tickers": [
+            {
+                "base": "BTC",
+                "coin_id": "bitcoin",
+                "market": {"identifier": "binance"},
+                "target": "USDT",
+            }
+        ]
+        * 100
+    }
+
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if "tickers?page=" in url:
+            return full
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
+    with pytest.raises(TemporaryFailure, match="classification catalog is incomplete"):
         source.fetch(OPEN, "classification", "BTCUSDT")
+    with pytest.raises(EvaluationError, match="unusable"):
+        source.fetch(OPEN, "classification", "bad symbol")
+    missing = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, _source()[0]._reader)
+    with pytest.raises(TemporaryFailure, match="classification base is unresolved"):
+        missing.fetch(OPEN, "classification", "ETHUSDT")
+    again = missing.fetch(OPEN, "classification", "BTCUSDT")
+    assert again[0].symbol == "BTCUSDT"
+    assert missing.calls.count("GET /api/v3/exchangeInfo") == 1
+
+
+def test_classification_and_a_ticker_at_the_close_make_no_provider_call() -> None:
     late, _spot = _source(now=session_close(OPEN))
     with pytest.raises(TemporaryFailure, match="after the close"):
+        late.fetch(OPEN, "classification", "BTCUSDT")
+    with pytest.raises(TemporaryFailure, match="after the close"):
         late.fetch(OPEN, "ticker", None)
-    assert source.calls == []
     assert late.calls == []
 
 
