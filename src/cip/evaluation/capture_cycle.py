@@ -201,7 +201,12 @@ def _pre_close(
     _one(root, session, source, "peg", "USDCUSDT", calls, skipped, retries, _keep_peg)
     for series in _REGIME:
         _one(root, session, source, "regime", series, calls, skipped, retries, _keep_regime)
+    catalog_failed = False
     for symbol in _captured_symbols(root, session):
+        if catalog_failed:
+            retries.append(f"classification:{symbol}")
+            continue
+        before = len(retries)
         _one(
             root,
             session,
@@ -213,6 +218,7 @@ def _pre_close(
             retries,
             _keep_classification,
         )
+        catalog_failed = len(retries) > before
     for symbol in symbols:
         if book_is_stored(root, session, symbol):
             skipped.append(f"book:{symbol}")

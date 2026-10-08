@@ -91,6 +91,7 @@ class EvidenceSource:
         self.calls: list[str] = []
         self._info: ExchangeInfo | None = None
         self._rows: dict[str, SymbolClassification] | None = None
+        self._catalog_unavailable = False
 
     def fetch(self, session: date, kind: str, symbol: str | None) -> object:
         """One observation. A temporary failure is raised with nothing stored."""
@@ -138,13 +139,20 @@ class EvidenceSource:
     def _classification(self, symbol: str | None) -> tuple[SymbolClassification, datetime]:
         if symbol is None or _TRADING.fullmatch(symbol) is None:
             raise EvaluationError("capture symbol is unusable")
+        if self._catalog_unavailable:
+            raise TemporaryFailure("classification catalog is incomplete")
         if self._rows is None:
             pairs = [
                 (item.symbol, item.base_asset)
                 for item in self._exchange_info().symbols
                 if item.quote_asset == "USDT" and item.base_asset != ""
             ]
-            self._rows = {item.symbol: item for item in produce_classifications(pairs, self._get)}
+            try:
+                produced = produce_classifications(pairs, self._get)
+            except CatalogIncomplete:
+                self._catalog_unavailable = True
+                raise
+            self._rows = {item.symbol: item for item in produced}
         found = self._rows.get(symbol)
         if found is None:
             raise TemporaryFailure("classification base is unresolved")
