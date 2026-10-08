@@ -24,7 +24,13 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from cip.adapters.binance import BinanceMarketClient
 from cip.adapters.market import Depth, ExchangeInfo, Kline, Ticker24h, parse_klines
-from cip.domain.errors import EvaluationError, ExchangeBannedError, MarketDataError, RecorderError
+from cip.domain.errors import (
+    EvaluationError,
+    ExchangeBannedError,
+    MarketDataError,
+    RateLimited,
+    RecorderError,
+)
 from cip.domain.policy import load_policy
 from cip.evaluation.capture_cycle import BookShot, CycleReport, TemporaryFailure, run_capture_cycle
 from cip.evaluation.classification import SymbolClassification
@@ -49,7 +55,39 @@ def _pause(seconds: float) -> None:
     _sleep(seconds)
 
 
+def _catalog_delay(attempt: int, header: str | None) -> float | None:
+    """Seconds to wait after this 429. None means this attempt is the last one."""
+    if attempt >= len(_CATALOG_FALLBACK_SECONDS):
+        return None
+    if header is not None:
+        try:
+            parsed = float(header)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed >= 0 and parsed != float("inf"):
+            return parsed
+    return _CATALOG_FALLBACK_SECONDS[attempt]
+
+
+def _budget(context: object) -> _Budget:
+    getter = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(getter):
+        return lambda: 180_000
+
+    def read() -> int:
+        value = getter()
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return 180_000
+
+    return read
+
+
 _SEALED = date(2026, 10, 6)
+_CATALOG_RESERVE_SECONDS = 15.0
+_CATALOG_PACE_SECONDS = 2.0
+_CATALOG_FALLBACK_SECONDS = (30.0, 45.0, 60.0)
+_Budget = Callable[[], int]
 _TRADING = re.compile(r"^[A-Z0-9]{1,20}$")
 _DEPTH_LIMIT = 100
 _PEG_LIMIT = 30
@@ -85,6 +123,7 @@ class EvidenceSource:
         depth_band: Decimal,
         base_url: str,
         reader: _Reader,
+        remaining: _Budget | None = None,
     ) -> None:
         _utc(now)
         if not base_url.startswith("https://"):
@@ -95,8 +134,11 @@ class EvidenceSource:
         self._base = base_url.rstrip("/")
         self._reader = reader
         self.calls: list[str] = []
+        self.catalog_trace: list[dict[str, object]] = []
+        self._remaining = remaining or (lambda: 180_000)
         self._info: ExchangeInfo | None = None
         self._rows: dict[str, SymbolClassification] | None = None
+        self._pages: dict[str, object] = {}
         self._catalog_unavailable = False
 
     def fetch(self, session: date, kind: str, symbol: str | None) -> object:
@@ -171,21 +213,71 @@ class EvidenceSource:
         return self._info
 
     def _get(self, url: str) -> object:
-        self.calls.append(f"GET {url}")
-        if "coingecko.com" in url:
-            _pause(2.0)
-        last = RecorderError("status 429")
-        for attempt in range(4):
-            try:
-                return self._reader(url, None)
-            except RecorderError as error:
-                last = error
-                if str(error) != "status 429":
-                    raise
-                if attempt < 3:
-                    _pause(5.0 * (attempt + 1))
+        cached = self._pages.get(url)
+        if cached is not None:
+            return cached
+        if "coingecko.com" in url and not self._wait(url, 0, _CATALOG_PACE_SECONDS, None, "pace"):
+            return self._abandon(url, 0, None, RecorderError("status 429"))
+        return self._attempt(url, 0)
+
+    def _attempt(self, url: str, attempt: int) -> object:
+        try:
+            self.calls.append(f"GET {url}")
+            payload = self._reader(url, None)
+        except RecorderError as error:
+            if str(error) != "status 429":
+                self._trace(url, attempt, "error", None, None, "failed")
+                raise
+            header = error.retry_after if isinstance(error, RateLimited) else None
+            delay = _catalog_delay(attempt, header)
+            if delay is None or not self._wait(url, attempt, delay, header, "retry"):
+                return self._abandon(url, attempt, header, error)
+            return self._attempt(url, attempt + 1)
+        self._pages[url] = payload
+        self._trace(url, attempt, "200", None, None, "succeeded")
+        return payload
+
+    def _trace(
+        self,
+        url: str,
+        attempt: int,
+        status: str,
+        header: str | None,
+        delay: float | None,
+        outcome: str,
+    ) -> None:
+        event: dict[str, object] = {
+            "attempt": attempt + 1,
+            "delay_seconds": delay,
+            "outcome": outcome,
+            "page": url,
+            "remaining_ms": self._remaining(),
+            "retry_after": header,
+            "status": status,
+        }
+        self.catalog_trace.append(event)
+        logger.info("classification catalog request", extra=event)
+
+    def _wait(
+        self,
+        url: str,
+        attempt: int,
+        delay: float,
+        header: str | None,
+        kind: str,
+    ) -> bool:
+        remaining = self._remaining()
+        if remaining / 1000 < delay + _CATALOG_RESERVE_SECONDS:
+            self._trace(url, attempt, "429", header, delay, "budget")
+            return False
+        self._trace(url, attempt, "429" if kind == "retry" else "pace", header, delay, kind)
+        _pause(delay)
+        return True
+
+    def _abandon(self, url: str, attempt: int, header: str | None, error: RecorderError) -> object:
         self._catalog_unavailable = True
-        raise last
+        self._trace(url, attempt, "429", header, None, "abandoned")
+        raise error
 
     def _peg(self, session: date) -> tuple[tuple[Decimal, ...], datetime, datetime]:
         self.calls.append("GET /api/v3/klines USDCUSDT 1h")
@@ -297,7 +389,7 @@ def capture(
     owned: tuple[_Closeable, ...] = ()
     evidence = source
     if evidence is None:
-        evidence, owned = _open_source(moment)
+        evidence, owned = _open_source(moment, _budget(_context))
     report: CycleReport | None = None
     error: BaseException | None = None
     written: tuple[str, ...] = ()
@@ -367,7 +459,9 @@ def evidence_prefixes(now: datetime) -> tuple[str, ...]:
     return tuple(prefixes)
 
 
-def _open_source(now: datetime) -> tuple[EvidenceSource, tuple[_Closeable, ...]]:
+def _open_source(
+    now: datetime, remaining: _Budget | None = None
+) -> tuple[EvidenceSource, tuple[_Closeable, ...]]:
     policy = load_policy(Path(os.environ["POLICY_PATH"]))
     base = policy.policy.venue.market_data_base_url
     public = httpx.Client(timeout=10.0, follow_redirects=False)
@@ -376,7 +470,7 @@ def _open_source(now: datetime) -> tuple[EvidenceSource, tuple[_Closeable, ...]]
     def read(url: str, params: dict[str, str] | None) -> object:
         return fetch_json(public, url, params)
 
-    source = EvidenceSource(spot, now, policy.policy.recorders.depth_band, base, read)
+    source = EvidenceSource(spot, now, policy.policy.recorders.depth_band, base, read, remaining)
     return source, (public, spot)
 
 

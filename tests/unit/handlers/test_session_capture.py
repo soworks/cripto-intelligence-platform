@@ -14,6 +14,7 @@ from cip.domain.errors import (
     ExchangeBannedError,
     ExchangeGeoBlockedError,
     MarketDataError,
+    RateLimited,
     RecorderError,
 )
 from cip.evaluation.capture_cycle import CycleReport, capture_cycle
@@ -387,7 +388,9 @@ def test_owned_clients_close(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
             def close(self) -> None:
                 closed["count"] += 1
 
-        monkeypatch.setattr(session_capture, "_open_source", lambda _now: (source, (_Door(),)))
+        monkeypatch.setattr(
+            session_capture, "_open_source", lambda _now, _remaining: (source, (_Door(),))
+        )
         session_capture.capture({}, _Context(), now=NOW, client=client, root=tmp_path)
         assert closed["count"] == 1
 
@@ -435,6 +438,121 @@ def test_public_reader_uses_the_policy_host(monkeypatch: pytest.MonkeyPatch) -> 
             item.close()
     assert any("coingecko" not in item for item in seen)
     assert seen[-1] == "closed"
+
+
+def _full_ticker_page() -> dict[str, object]:
+    return {
+        "tickers": [
+            {
+                "base": "BTC",
+                "coin_id": "bitcoin",
+                "market": {"identifier": "binance"},
+                "target": "USDT",
+            }
+        ]
+        * 100
+    }
+
+
+def test_retry_after_then_a_longer_fallback_finishes_one_catalog() -> None:
+    waits: list[float] = []
+    pages: dict[str, int] = {}
+
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if "tickers?page=" in url:
+            pages[url] = pages.get(url, 0) + 1
+            page = url.rsplit("=", 1)[-1]
+            if page != "6":
+                return _full_ticker_page()
+            if pages[url] == 1:
+                raise RateLimited("25")
+            if pages[url] == 2:
+                raise RateLimited("later")
+            return {"tickers": []}
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
+    original = session_capture._pause
+
+    def record(seconds: float) -> None:
+        waits.append(seconds)
+        original(seconds)
+
+    session_capture._pause = record
+    try:
+        item, _captured = source.fetch(OPEN, "classification", "BTCUSDT")
+    finally:
+        session_capture._pause = original
+    assert item.symbol == "BTCUSDT"
+    assert pages["https://api.coingecko.com/api/v3/exchanges/binance/tickers?page=6"] == 3
+    assert all(count == 1 for page, count in pages.items() if not page.endswith("=6"))
+    assert 25.0 in waits
+    assert 45.0 in waits
+    again = source.fetch(OPEN, "classification", "BTCUSDT")
+    assert again[0].symbol == "BTCUSDT"
+    assert pages["https://api.coingecko.com/api/v3/exchanges/binance/tickers?page=6"] == 3
+    outcomes = [row["outcome"] for row in source.catalog_trace]
+    assert "succeeded" in outcomes
+    assert "abandoned" not in outcomes
+    page = "https://api.coingecko.com/api/v3/exchanges/binance/tickers?page=1"
+    stored = source._pages[page]
+    assert source._get(page) is stored
+    assert source.calls.count(f"GET {page}") == 1
+
+
+def test_a_429_stops_when_the_execution_budget_cannot_cover_the_wait() -> None:
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if "tickers?page=" in url:
+            raise RateLimited("120")
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader, remaining=lambda: 20_000)
+    with pytest.raises(TemporaryFailure, match="status 429"):
+        source.fetch(OPEN, "classification", "BTCUSDT")
+    assert source.catalog_trace[-1]["outcome"] == "abandoned"
+    recorded = len(source.calls)
+    with pytest.raises(TemporaryFailure, match="classification catalog is incomplete"):
+        source.fetch(OPEN, "classification", "ETHUSDT")
+    assert len(source.calls) == recorded
+
+
+def test_a_tiny_budget_does_not_start_a_coingecko_page() -> None:
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if "coingecko.com" in url:
+            raise AssertionError("the request must not start")
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader, remaining=lambda: 1_000)
+    with pytest.raises(TemporaryFailure, match="status 429"):
+        source.fetch(OPEN, "classification", "BTCUSDT")
+    assert not any("coingecko" in call for call in source.calls)
+
+
+def test_catalog_budget_uses_the_lambda_clock() -> None:
+    assert session_capture._budget(object())() == 180_000
+    clock = type("Clock", (), {"get_remaining_time_in_millis": lambda self: 90_000})
+    assert session_capture._budget(clock())() == 90_000
+    blank = type("Blank", (), {"get_remaining_time_in_millis": lambda self: "soon"})
+    assert session_capture._budget(blank())() == 180_000
+    flag = type("Flag", (), {"get_remaining_time_in_millis": lambda self: True})
+    assert session_capture._budget(flag())() == 180_000
+    assert session_capture._catalog_delay(0, "-1") == 30.0
+    assert session_capture._catalog_delay(0, "inf") == 30.0
+    assert session_capture._catalog_delay(1, "nan") == 45.0
+    assert session_capture._catalog_delay(0, "0") == 0.0
+    assert session_capture._catalog_delay(3, "10") is None
 
 
 def test_a_coingecko_429_is_retried_before_the_catalog_is_abandoned() -> None:

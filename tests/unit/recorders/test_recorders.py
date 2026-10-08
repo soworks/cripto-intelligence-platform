@@ -13,6 +13,7 @@ from cip.domain.errors import (
     ExchangeBannedError,
     ExchangeGeoBlockedError,
     MarketDataError,
+    RateLimited,
     RecorderError,
 )
 from cip.recorders.cli import main
@@ -200,6 +201,17 @@ def test_fetch_json_reports_timeout_server_error_and_malformed_body() -> None:
             fetch_json(client, "https://example.test/451")
         with pytest.raises(RecorderError, match="malformed"):
             fetch_json(client, "https://example.test/bad")
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(429, headers={"Retry-After": "30"})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(limited)) as client,
+        pytest.raises(RateLimited, match="status 429") as caught,
+    ):
+        fetch_json(client, "https://example.test/limited")
+    assert caught.value.retry_after == "30"
 
 
 def test_a_transport_error_is_a_recorder_error() -> None:
