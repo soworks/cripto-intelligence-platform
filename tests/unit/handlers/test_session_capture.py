@@ -456,6 +456,10 @@ def test_classification_retries_an_incomplete_catalog_and_an_unknown_base() -> N
     source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
     with pytest.raises(TemporaryFailure, match="classification catalog is incomplete"):
         source.fetch(OPEN, "classification", "BTCUSDT")
+    calls_after_failure = len(source.calls)
+    with pytest.raises(TemporaryFailure, match="classification catalog is incomplete"):
+        source.fetch(OPEN, "classification", "BTCUSDT")
+    assert len(source.calls) == calls_after_failure
     with pytest.raises(EvaluationError, match="unusable"):
         source.fetch(OPEN, "classification", "bad symbol")
     missing = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, _source()[0]._reader)

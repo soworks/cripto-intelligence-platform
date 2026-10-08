@@ -290,6 +290,37 @@ def test_a_universe_file_without_symbols_is_unusable(tmp_path: Path) -> None:
         run_capture_cycle(tmp_path, NOW, Source(_pre_answers(OPEN, NOW)), ("BTCUSDT",))
 
 
+def test_one_incomplete_catalog_does_not_block_the_book(tmp_path: Path) -> None:
+    info = ExchangeInfo.model_validate(
+        {
+            "symbols": [
+                {
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "symbol": "BTCUSDT",
+                },
+                {
+                    "baseAsset": "ETH",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "symbol": "ETHUSDT",
+                },
+            ]
+        }
+    )
+    answers = _pre_answers(OPEN, NOW)
+    answers[(OPEN, "universe", None)] = universe_capture(OPEN, info, NOW, NOW)
+    source = Source(answers, fail={(OPEN, "classification", "BTCUSDT")})
+    report = run_capture_cycle(tmp_path, NOW, source, ("BTCUSDT",))
+    assert source.calls.count(("classification", "BTCUSDT", OPEN)) == 1
+    assert ("classification", "ETHUSDT", OPEN) not in source.calls
+    assert "classification:BTCUSDT" in report.retries
+    assert "classification:ETHUSDT" in report.retries
+    assert ("book", "BTCUSDT") in report.calls
+    assert not (tmp_path / "captures/session=2026-10-07/classification").exists()
+
+
 def test_classification_follows_the_stored_universe(tmp_path: Path) -> None:
     info = ExchangeInfo.model_validate(
         {
