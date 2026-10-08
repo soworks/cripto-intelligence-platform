@@ -7,12 +7,13 @@ import pytest
 
 import cip.evaluation.capture_cycle as cycle_module
 from cip.adapters.market import ExchangeInfo
-from cip.domain.errors import EvaluationError
+from cip.domain.errors import EvaluationError, PolicyError
 from cip.evaluation.capture_cycle import (
     BookShot,
     CycleReport,
     TemporaryFailure,
     _one_bar,
+    _policy_path,
     _post_close,
     _present,
     _spike,
@@ -580,6 +581,21 @@ def test_a_duplicate_daily_date_is_not_turned_into_a_spike_count() -> None:
     repeated = (_bar(OPEN, Decimal("1")), _bar(OPEN, Decimal("1")))
     with pytest.raises(EvaluationError, match="capture is unusable"):
         _spike(OPEN, AFTER, repeated, ())
+
+
+def test_spike_reads_the_policy_path_the_workload_sets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing.yaml"
+    monkeypatch.setenv("POLICY_PATH", str(missing))
+    assert _policy_path() == missing
+    with pytest.raises(PolicyError, match="cannot read policy file"):
+        _spike(OPEN, AFTER, (), ())
+    monkeypatch.setenv(
+        "POLICY_PATH",
+        str(Path(__file__).resolve().parents[3] / "policies" / "investment-policy.yaml"),
+    )
+    assert _spike(OPEN, AFTER, (), ()) is None
 
 
 def test_readiness_waits_for_each_pre_close_file(tmp_path: Path) -> None:
