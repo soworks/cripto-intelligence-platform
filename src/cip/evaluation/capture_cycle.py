@@ -201,7 +201,7 @@ def _pre_close(
     _one(root, session, source, "peg", "USDCUSDT", calls, skipped, retries, _keep_peg)
     for series in _REGIME:
         _one(root, session, source, "regime", series, calls, skipped, retries, _keep_regime)
-    for symbol in symbols:
+    for symbol in _captured_symbols(root, session):
         _one(
             root,
             session,
@@ -213,6 +213,7 @@ def _pre_close(
             retries,
             _keep_classification,
         )
+    for symbol in symbols:
         if book_is_stored(root, session, symbol):
             skipped.append(f"book:{symbol}")
             continue
@@ -620,6 +621,18 @@ def _iso(moment: datetime) -> str:
 
 def _manifest(root: Path, session: date) -> Path:
     return root / "sessions" / f"date={session.isoformat()}" / "manifest.json"
+
+
+def _captured_symbols(root: Path, session: date) -> tuple[str, ...]:
+    """Symbols in the stored universe. Books are not this list."""
+    path = _universe_path(root, session)
+    if not path.is_file():
+        return ()
+    document = json.loads(path.read_text())
+    raw = document.get("symbols") if isinstance(document, dict) else None
+    if not isinstance(raw, list) or any(not isinstance(symbol, str) for symbol in raw):
+        raise EvaluationError("capture is unusable")
+    return tuple(raw)
 
 
 def _universe_path(root: Path, session: date) -> Path:
