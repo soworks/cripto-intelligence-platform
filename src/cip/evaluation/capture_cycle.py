@@ -205,22 +205,29 @@ def _pre_close(
     for series in _REGIME:
         _one(root, session, source, "regime", series, calls, skipped, retries, _keep_regime)
     catalog_failed = False
+    catalog_error: EvaluationError | None = None
     for symbol in _captured_symbols(root, session):
         if catalog_failed:
             retries.append(f"classification:{symbol}")
             continue
         before = len(retries)
-        _one(
-            root,
-            session,
-            source,
-            "classification",
-            symbol,
-            calls,
-            skipped,
-            retries,
-            _keep_classification,
-        )
+        try:
+            _one(
+                root,
+                session,
+                source,
+                "classification",
+                symbol,
+                calls,
+                skipped,
+                retries,
+                _keep_classification,
+            )
+        except EvaluationError as error:
+            catalog_error = error
+            catalog_failed = True
+            retries.append(f"classification:{symbol}")
+            continue
         catalog_failed = len(retries) > before
     for symbol in symbols:
         if book_is_stored(root, session, symbol):
@@ -235,6 +242,8 @@ def _pre_close(
         if not isinstance(payload, BookShot):
             raise EvaluationError("capture is unusable")
         store_session_book(root, session, symbol, payload)
+    if catalog_error is not None:
+        raise catalog_error
 
 
 def _post_close(
