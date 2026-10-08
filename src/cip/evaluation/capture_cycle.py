@@ -8,6 +8,7 @@ possible. One stored book is the session's only spread snapshot.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -37,7 +38,6 @@ from cip.evaluation.session import SessionReadiness, session_close
 from cip.history.bars import DailyBar
 
 _SEALED = date(2026, 10, 6)
-_POLICY = Path(__file__).resolve().parents[3] / "policies" / "investment-policy.yaml"
 _REGIME = ("btc_dominance", "stablecoin_supply")
 
 
@@ -299,10 +299,18 @@ def _one_bar(
     _create(hours_path, _hours_body(session, symbol, grid, cycle.now, count))
 
 
+def _policy_path() -> Path:
+    """The workload sets POLICY_PATH. A checkout falls back to the repo file."""
+    configured = os.environ.get("POLICY_PATH")
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[3] / "policies" / "investment-policy.yaml"
+
+
 def _spike(
     session: date, now: datetime, bars: tuple[DailyBar, ...], hours: tuple[HourQuote, ...]
 ) -> int | None:
-    rules = load_policy(_POLICY).policy.hypotheses.universe.manipulation
+    rules = load_policy(_policy_path()).policy.hypotheses.universe.manipulation
     try:
         return spike_candle_count(
             bars,
