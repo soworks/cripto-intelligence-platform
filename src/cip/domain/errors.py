@@ -38,6 +38,14 @@ class RecorderError(CipError):
     """A provider response cannot become an observation; callers must not invent one."""
 
 
+class RateLimited(RecorderError):
+    """The provider returned 429. retry_after is the raw header, when one was sent."""
+
+    def __init__(self, retry_after: str | None) -> None:
+        super().__init__("status 429")
+        self.retry_after = retry_after
+
+
 class EvaluationError(CipError):
     """A decision or outcome cannot be stored; callers must not rewrite the original."""
 

@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from cip.adapters.market import Depth
-from cip.domain.errors import ExchangeGeoBlockedError, RecorderError
+from cip.domain.errors import ExchangeGeoBlockedError, RateLimited, RecorderError
 from cip.recorders.observation import Observation
 
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
@@ -25,6 +25,8 @@ def fetch_json(client: httpx.Client, url: str, params: dict[str, str] | None = N
         raise RecorderError("transport") from error
     if response.status_code == 451:
         raise ExchangeGeoBlockedError("host returned 451")
+    if response.status_code == 429:
+        raise RateLimited(response.headers.get("Retry-After"))
     if response.status_code != 200:
         raise RecorderError(f"status {response.status_code}")
     try:
