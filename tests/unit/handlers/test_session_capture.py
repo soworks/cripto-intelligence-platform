@@ -22,6 +22,12 @@ from cip.handlers import session_capture
 from cip.handlers.session_capture import EvidenceSource, TemporaryFailure
 from cip.recorders.observation import Observation
 
+
+@pytest.fixture(autouse=True)
+def _no_catalog_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(session_capture, "_sleep", lambda _seconds: None)
+
+
 OPEN = date(2026, 10, 7)
 NOW = datetime(2026, 10, 7, 19, tzinfo=UTC)
 AFTER = datetime(2026, 10, 8, 1, tzinfo=UTC)
@@ -429,6 +435,54 @@ def test_public_reader_uses_the_policy_host(monkeypatch: pytest.MonkeyPatch) -> 
             item.close()
     assert any("coingecko" not in item for item in seen)
     assert seen[-1] == "closed"
+
+
+def test_a_coingecko_429_is_retried_before_the_catalog_is_abandoned() -> None:
+    calls = {"n": 0}
+
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if "tickers?page=" in url:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RecorderError("status 429")
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
+    item, _captured = source.fetch(OPEN, "classification", "BTCUSDT")
+    assert item.symbol == "BTCUSDT"
+    assert calls["n"] == 3
+
+    def always(url: str, params: dict[str, str] | None) -> object:
+        del url, params
+        raise RecorderError("status 429")
+
+    blocked = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, always)
+    with pytest.raises(TemporaryFailure):
+        blocked.fetch(OPEN, "classification", "BTCUSDT")
+    recorded = len(blocked.calls)
+    with pytest.raises(TemporaryFailure, match="classification catalog is incomplete"):
+        blocked.fetch(OPEN, "classification", "BTCUSDT")
+    assert len(blocked.calls) == recorded
+
+
+def test_a_non_429_catalog_error_is_not_retried() -> None:
+    def reader(url: str, params: dict[str, str] | None) -> object:
+        del params
+        if url.endswith("get-all-asset"):
+            raise RecorderError("status 500")
+        catalog = _catalog(url)
+        if catalog is not None:
+            return catalog
+        raise AssertionError(url)
+
+    source = EvidenceSource(_Spot(), NOW, Decimal("0.02"), BASE, reader)
+    with pytest.raises(TemporaryFailure, match="status 500"):
+        source.fetch(OPEN, "classification", "BTCUSDT")
+    assert sum(call.endswith("get-all-asset") for call in source.calls) == 1
 
 
 def test_classification_retries_an_incomplete_catalog_and_an_unknown_base() -> None:
